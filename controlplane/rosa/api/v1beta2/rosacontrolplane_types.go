@@ -169,6 +169,30 @@ type RosaControlPlaneSpec struct { //nolint: maligned
 	// OpenShift semantic version, for example "4.14.5".
 	Version string `json:"version"`
 
+	// ReleaseImage is the OCP release payload image used to create the cluster,
+	// for example "quay.io/openshift-release-dev/ocp-release:4.19.0-x86_64".
+	// Required when the ROSASeaplaneV2 feature gate is enabled; the OCM
+	// reconciliation path derives the payload from Version instead.
+	// When empty, the controller falls back to the SEAPLANE_RELEASE_IMAGE
+	// environment variable.
+	//
+	// +immutable
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="releaseImage is immutable"
+	// +optional
+	ReleaseImage string `json:"releaseImage,omitempty"`
+
+	// BaseDomain is the DNS base domain used when creating the cluster via the
+	// Seaplane Platform API v2, for example "f7a3.0.openshiftapps.com".
+	// When empty, the Platform API allocates a DNS reservation automatically.
+	// When the ROSASeaplaneV2 feature gate is disabled this field is ignored.
+	// When empty and the gate is enabled, the controller falls back to the
+	// SEAPLANE_BASE_DOMAIN environment variable.
+	//
+	// +immutable
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="baseDomain is immutable"
+	// +optional
+	BaseDomain string `json:"baseDomain,omitempty"`
+
 	// OpenShift version channel group.
 	// When not specified, OCM will determine the appropriate channel group based on the cluster version.
 	// This field will be deprecated in a future release in favor of the Channel field.

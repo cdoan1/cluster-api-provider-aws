@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
@@ -30,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -186,6 +188,38 @@ func TestReconcileSeaplaneNormal_Create(t *testing.T) {
 	g.Expect(controlPlane.Status.Ready).To(BeFalse())
 }
 
+func TestReconcileSeaplaneNormal_CreateWithSpecReleaseImage(t *testing.T) {
+	g := NewWithT(t)
+	// Ensure the env fallback is not what satisfies the create.
+	t.Setenv(rosa.SeaplaneReleaseImageEnvVar, "")
+	t.Setenv(rosa.SeaplaneBaseDomainEnvVar, "")
+	stubDescribeSeaplaneSubnet(t)
+
+	controlPlane := newSeaplaneTestControlPlane()
+	controlPlane.Spec.ReleaseImage = "quay.io/openshift-release-dev/ocp-release:4.19.0-x86_64"
+	controlPlane.Spec.BaseDomain = "spec.example.com"
+	rosaScope, closeScope := newSeaplaneTestScope(t, controlPlane)
+	defer closeScope()
+
+	fakeCs := &fakeSeaplaneClientset{inner: seaplanefake.NewSimpleClientset()}
+	r := ROSAControlPlaneReconciler{
+		Client: rosaScope.Client,
+		NewSeaplaneClient: func(_ awsv2.Config, _ *rosaaws.Creator, _ string) (seaplaneclientset.Interface, error) {
+			return fakeCs, nil
+		},
+	}
+
+	_, err := r.reconcileSeaplaneNormal(context.Background(), rosaScope, seaplaneTestCreator())
+	g.Expect(err).ToNot(HaveOccurred())
+
+	created, err := fakeCs.SeaplaneV1alpha1().Clusters().Get(
+		context.Background(), "test-cluster", platform.GetOptions{})
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(created.Spec.HostedCluster.Release.Image).To(
+		Equal("quay.io/openshift-release-dev/ocp-release:4.19.0-x86_64"))
+	g.Expect(created.Spec.HostedCluster.DNS.BaseDomain).To(Equal("spec.example.com"))
+}
+
 func TestReconcileSeaplaneNormal_Ready(t *testing.T) {
 	g := NewWithT(t)
 
@@ -218,6 +252,74 @@ func TestReconcileSeaplaneNormal_Ready(t *testing.T) {
 	g.Expect(controlPlane.Status.Version).To(Equal("4.19.0"))
 	g.Expect(controlPlane.Spec.ControlPlaneEndpoint.Host).To(Equal("api.test-cluster.example.com"))
 	g.Expect(controlPlane.Spec.ControlPlaneEndpoint.Port).To(Equal(int32(6443)))
+}
+
+func TestReconcileSeaplaneNormal_ReadyUpdatesMutableFields(t *testing.T) {
+	g := NewWithT(t)
+
+	controlPlane := newSeaplaneTestControlPlane()
+	controlPlane.Spec.AdditionalTags = infrav1.Tags{"owner": "capa", "env": "test"}
+	controlPlane.Spec.DeleteProtection = rosacontrolplanev1.DeleteProtectionEnabled
+	rosaScope, closeScope := newSeaplaneTestScope(t, controlPlane)
+	defer closeScope()
+
+	cluster := &seaplanev1alpha1.Cluster{}
+	cluster.Name = "test-cluster"
+	cluster.UID = "test-uid"
+	cluster.Status.Phase = seaplanev1alpha1.ClusterPhaseReady
+	cluster.Status.ControlPlaneEndpoint.Host = "api.test-cluster.example.com"
+	cluster.Status.ControlPlaneEndpoint.Port = 6443
+	// Drift: no delete protection and a stale tag set on the platform side.
+	cluster.Spec.Tags = map[string]string{"stale": "true"}
+
+	fakeCs := &fakeSeaplaneClientset{inner: seaplanefake.NewSimpleClientset(cluster)}
+	r := ROSAControlPlaneReconciler{
+		Client: rosaScope.Client,
+		NewSeaplaneClient: func(_ awsv2.Config, _ *rosaaws.Creator, _ string) (seaplaneclientset.Interface, error) {
+			return fakeCs, nil
+		},
+	}
+
+	_, err := r.reconcileSeaplaneNormal(context.Background(), rosaScope, seaplaneTestCreator())
+	g.Expect(err).ToNot(HaveOccurred())
+
+	updated, err := fakeCs.SeaplaneV1alpha1().Clusters().Get(
+		context.Background(), "test-cluster", platform.GetOptions{})
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(updated.Spec.Tags).To(Equal(map[string]string{"owner": "capa", "env": "test"}))
+	g.Expect(updated.Spec.DeleteProtection).ToNot(BeNil())
+	g.Expect(*updated.Spec.DeleteProtection).To(BeTrue())
+	g.Expect(controlPlane.Status.Ready).To(BeTrue())
+}
+
+func TestReconcileSeaplaneNormal_ReadyNoUpdateWhenInSync(t *testing.T) {
+	g := NewWithT(t)
+
+	controlPlane := newSeaplaneTestControlPlane()
+	controlPlane.Spec.AdditionalTags = infrav1.Tags{"owner": "capa"}
+	rosaScope, closeScope := newSeaplaneTestScope(t, controlPlane)
+	defer closeScope()
+
+	cluster := &seaplanev1alpha1.Cluster{}
+	cluster.Name = "test-cluster"
+	cluster.UID = "test-uid"
+	cluster.Status.Phase = seaplanev1alpha1.ClusterPhaseReady
+	cluster.Spec.Tags = map[string]string{"owner": "capa"}
+
+	fakeCs := &fakeSeaplaneClientset{inner: seaplanefake.NewSimpleClientset(cluster)}
+	fakeCs.inner.PrependReactor("update", "clusters", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("unexpected update call")
+	})
+	r := ROSAControlPlaneReconciler{
+		Client: rosaScope.Client,
+		NewSeaplaneClient: func(_ awsv2.Config, _ *rosaaws.Creator, _ string) (seaplaneclientset.Interface, error) {
+			return fakeCs, nil
+		},
+	}
+
+	_, err := r.reconcileSeaplaneNormal(context.Background(), rosaScope, seaplaneTestCreator())
+	g.Expect(err).ToNot(HaveOccurred())
+	g.Expect(controlPlane.Status.Ready).To(BeTrue())
 }
 
 func TestReconcileSeaplaneNormal_Provisioning(t *testing.T) {

@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
 	ec2svc "github.com/aws/aws-sdk-go-v2/service/ec2"
@@ -27,6 +28,7 @@ import (
 	"github.com/openshift-online/rosa-seaplane-api/clientset/platform"
 	rosaaws "github.com/openshift/rosa/pkg/aws"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -80,7 +82,27 @@ func (r *ROSAControlPlaneReconciler) reconcileSeaplaneNormal(
 		return ctrl.Result{RequeueAfter: defaultRequeueInterval}, nil
 	}
 
-	return r.updateSeaplaneClusterStatus(rosaScope, cluster)
+	return r.updateSeaplaneClusterStatus(ctx, rosaScope, clusters, cluster)
+}
+
+// resolveSeaplaneReleaseImage returns the release payload image from the
+// RosaControlPlaneSpec, falling back to the SEAPLANE_RELEASE_IMAGE
+// environment variable.
+func resolveSeaplaneReleaseImage(rosaScope *scope.ROSAControlPlaneScope) string {
+	if rosaScope.ControlPlane.Spec.ReleaseImage != "" {
+		return rosaScope.ControlPlane.Spec.ReleaseImage
+	}
+	return rosa.SeaplaneReleaseImage()
+}
+
+// resolveSeaplaneBaseDomain returns the DNS base domain from the
+// RosaControlPlaneSpec, falling back to the SEAPLANE_BASE_DOMAIN
+// environment variable.
+func resolveSeaplaneBaseDomain(rosaScope *scope.ROSAControlPlaneScope) string {
+	if rosaScope.ControlPlane.Spec.BaseDomain != "" {
+		return rosaScope.ControlPlane.Spec.BaseDomain
+	}
+	return rosa.SeaplaneBaseDomain()
 }
 
 // newSeaplaneClient builds the Platform API v2 client, honouring the
@@ -129,9 +151,9 @@ func (r *ROSAControlPlaneReconciler) createSeaplaneCluster(
 		rosaScope.ControlPlane.Spec,
 		rosaRoleConfig,
 		rosaNet,
-		rosa.SeaplaneReleaseImage(),
+		resolveSeaplaneReleaseImage(rosaScope),
 		subnetInfo,
-		rosa.SeaplaneBaseDomain(),
+		resolveSeaplaneBaseDomain(rosaScope),
 	)
 	if err != nil {
 		return err
@@ -175,9 +197,11 @@ var describeSeaplaneSubnet = func(
 }
 
 // updateSeaplaneClusterStatus maps the Platform API cluster phase onto the
-// ROSAControlPlane status and conditions.
+// ROSAControlPlane status and conditions, reconciling mutable spec fields
+// once the cluster is Ready.
 func (r *ROSAControlPlaneReconciler) updateSeaplaneClusterStatus(
-	rosaScope *scope.ROSAControlPlaneScope, cluster *seaplanev1alpha1.Cluster,
+	ctx context.Context, rosaScope *scope.ROSAControlPlaneScope,
+	clusters platform.ClusterInterface, cluster *seaplanev1alpha1.Cluster,
 ) (ctrl.Result, error) {
 	rosaScope.ControlPlane.Status.ID = string(cluster.UID)
 	rosaScope.ControlPlane.Status.Version = cluster.Status.Version
@@ -185,6 +209,10 @@ func (r *ROSAControlPlaneReconciler) updateSeaplaneClusterStatus(
 
 	switch cluster.Status.Phase {
 	case seaplanev1alpha1.ClusterPhaseReady:
+		cluster, err := r.reconcileSeaplaneUpdates(ctx, rosaScope, clusters, cluster)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to reconcile seaplane cluster updates: %w", err)
+		}
 		v1beta1conditions.MarkTrue(rosaScope.ControlPlane, rosacontrolplanev1.ROSAControlPlaneReadyCondition)
 		rosaScope.ControlPlane.Status.Ready = true
 		rosaScope.ControlPlane.Spec.ControlPlaneEndpoint.Host = cluster.Status.ControlPlaneEndpoint.Host
@@ -206,6 +234,54 @@ func (r *ROSAControlPlaneReconciler) updateSeaplaneClusterStatus(
 		rosaScope.Info("waiting for seaplane cluster to become ready", "phase", cluster.Status.Phase)
 		return ctrl.Result{RequeueAfter: defaultRequeueInterval}, nil
 	}
+}
+
+// reconcileSeaplaneUpdates applies the mutable RosaControlPlaneSpec fields
+// (delete protection, additional tags) to an existing Platform API cluster,
+// mirroring the OCM path's updateOCMCluster / ReconcileDeleteProtection. It
+// returns the cluster as reported by the Platform API after any update; when
+// no field drifted the input cluster is returned unchanged.
+func (r *ROSAControlPlaneReconciler) reconcileSeaplaneUpdates(
+	ctx context.Context, rosaScope *scope.ROSAControlPlaneScope,
+	clusters platform.ClusterInterface, cluster *seaplanev1alpha1.Cluster,
+) (*seaplanev1alpha1.Cluster, error) {
+	updated := false
+
+	desiredDeleteProtection := rosaScope.ControlPlane.Spec.DeleteProtection == rosacontrolplanev1.DeleteProtectionEnabled
+	currentDeleteProtection := cluster.Spec.DeleteProtection != nil && *cluster.Spec.DeleteProtection
+	if desiredDeleteProtection != currentDeleteProtection {
+		cluster.Spec.DeleteProtection = ptr.To(desiredDeleteProtection)
+		updated = true
+	}
+
+	if !reflect.DeepEqual(cluster.Spec.Tags, seaplaneTags(rosaScope)) {
+		cluster.Spec.Tags = seaplaneTags(rosaScope)
+		updated = true
+	}
+
+	if !updated {
+		return cluster, nil
+	}
+
+	rosaScope.Info("updating seaplane cluster", "name", cluster.Name)
+	updatedCluster, err := clusters.Update(ctx, cluster, platform.UpdateOptions{})
+	if err != nil {
+		return nil, rosa.WithSeaplaneAPIErrorDetails(err)
+	}
+	return updatedCluster, nil
+}
+
+// seaplaneTags maps RosaControlPlaneSpec.AdditionalTags onto the Platform API
+// cluster tags, returning nil when none are set.
+func seaplaneTags(rosaScope *scope.ROSAControlPlaneScope) map[string]string {
+	if len(rosaScope.ControlPlane.Spec.AdditionalTags) == 0 {
+		return nil
+	}
+	tags := make(map[string]string, len(rosaScope.ControlPlane.Spec.AdditionalTags))
+	for k, v := range rosaScope.ControlPlane.Spec.AdditionalTags {
+		tags[k] = v
+	}
+	return tags
 }
 
 // reconcileSeaplaneDelete deletes the cluster via the Platform API and waits

@@ -381,7 +381,7 @@ var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
 
 	ginkgo.It("creates and deletes a seaplane v2 cluster via ROSAControlPlane", func() {
 		requireEnv("SEAPLANE_URL")
-		requireEnv("SEAPLANE_RELEASE_IMAGE")
+		releaseImage := requireEnv("SEAPLANE_RELEASE_IMAGE")
 		subnetID := requireEnv("SEAPLANE_SUBNET_ID")
 		clusterName := envOrDefault("SEAPLANE_CLUSTER_NAME", fmt.Sprintf("sp-e2e-%d", time.Now().Unix()))
 		operatorRolesPrefix := envOrDefault("SEAPLANE_OPERATOR_ROLES_PREFIX", clusterName)
@@ -451,6 +451,7 @@ var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
 				Subnets:         []string{subnetID},
 				OIDCID:          oidcUID,
 				RolesRef:        rolesRef,
+				ReleaseImage:    releaseImage,
 				EndpointAccess:  rosacontrolplanev1.Public,
 			},
 		}

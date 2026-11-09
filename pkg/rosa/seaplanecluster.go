@@ -66,7 +66,7 @@ func BuildSeaplaneCluster(
 	baseDomain string,
 ) (*seaplanev1alpha1.Cluster, error) {
 	if releaseImage == "" {
-		return nil, fmt.Errorf("seaplane: release image is required (set %s)", SeaplaneReleaseImageEnvVar)
+		return nil, fmt.Errorf("seaplane: release image is required (set rosaControlPlaneSpec.releaseImage or %s)", SeaplaneReleaseImageEnvVar)
 	}
 	if subnetInfo.SubnetID == "" {
 		return nil, fmt.Errorf("seaplane: control plane subnet is required")
