@@ -92,6 +92,13 @@ const (
 	// owner: @enxebre
 	// alpha: v2.2
 	ROSA featuregate.Feature = "ROSA"
+
+	// ROSASeaplaneV2 enables ROSA control plane reconciliation against the v2
+	// Seaplane Platform API (via the rosa-seaplane-api clientset) instead of OCM.
+	// Requires the SEAPLANE_URL environment variable to be set.
+	// owner: @cdoan
+	// alpha: v2.12
+	ROSASeaplaneV2 featuregate.Feature = "ROSASeaplaneV2"
 )
 
 func init() {
@@ -115,4 +122,5 @@ var defaultCAPAFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	AlternativeGCStrategy:         {Default: false, PreRelease: featuregate.Beta},
 	TagUnmanagedNetworkResources:  {Default: true, PreRelease: featuregate.Alpha},
 	ROSA:                          {Default: false, PreRelease: featuregate.Alpha},
+	ROSASeaplaneV2:                {Default: false, PreRelease: featuregate.Alpha},
 }

@@ -469,6 +469,14 @@ test-e2e: $(KIND) $(SSM_PLUGIN) $(KUSTOMIZE) generate-test-flavors e2e-image ## 
 test-e2e-eks: generate-test-flavors $(KIND) $(SSM_PLUGIN) $(KUSTOMIZE) e2e-image ## Run eks e2e tests
 	time go run github.com/onsi/ginkgo/v2/ginkgo -tags=e2e $(GINKGO_ARGS) -p ./test/e2e/suites/managed/... -- -config-path="$(E2E_EKS_CONF_PATH)" --source-template="$(EKS_SOURCE_TEMPLATE)" $(E2E_ARGS) $(EKS_E2E_ARGS)
 
+.PHONY: test-e2e-rosa-seaplane ## Run ROSA seaplane sanity e2e test against the v2 Seaplane Platform API
+## Requires: SEAPLANE_URL, SEAPLANE_RELEASE_IMAGE, SEAPLANE_SUBNET_ID and AWS credentials.
+## Optional: SEAPLANE_CLUSTER_NAME, SEAPLANE_OPERATOR_ROLES_PREFIX, SEAPLANE_BASE_DOMAIN.
+## The controller manager is deployed with EXP_ROSA=true EXP_ROSA_SEAPLANE_V2=true, which
+## can be overridden via the same-named environment variables.
+test-e2e-rosa-seaplane: $(KIND) $(SSM_PLUGIN) $(KUSTOMIZE) e2e-image ## Run ROSA seaplane e2e tests
+	EXP_ROSA=true EXP_ROSA_SEAPLANE_V2=true time go run github.com/onsi/ginkgo/v2/ginkgo -tags=e2e $(GINKGO_ARGS) ./test/e2e/suites/rosa_seaplane/... -- -config-path="$(E2E_CONF_PATH)" $(E2E_ARGS)
+
 CONFORMANCE_E2E_ARGS ?= -kubetest.config-file=$(KUBETEST_CONF_PATH)
 CONFORMANCE_E2E_ARGS += $(E2E_ARGS)
 CONFORMANCE_GINKGO_ARGS += $(GINKGO_ARGS)

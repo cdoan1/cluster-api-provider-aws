@@ -37,6 +37,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	idputils "github.com/openshift-online/ocm-common/pkg/idp/utils"
 	cmv1 "github.com/openshift-online/ocm-sdk-go/clustersmgmt/v1"
+	seaplaneclientset "github.com/openshift-online/rosa-seaplane-api/clientset"
 	rosaaws "github.com/openshift/rosa/pkg/aws"
 	"github.com/openshift/rosa/pkg/logforwarding"
 	"github.com/openshift/rosa/pkg/ocm"
@@ -106,6 +107,9 @@ type ROSAControlPlaneReconciler struct {
 	WatchFilterValue string
 	WaitInfraPeriod  time.Duration
 	NewOCMClient     func(ctx context.Context, rosaScope *scope.ROSAControlPlaneScope) (rosa.OCMClient, error)
+	// NewSeaplaneClient overrides the Platform API v2 client creation per
+	// reconciliation. Used in tests to inject a fake clientset.
+	NewSeaplaneClient func(awsCfg awsv2.Config, creator *rosaaws.Creator, region string) (seaplaneclientset.Interface, error)
 	// awsClientFactory overrides AWS client creation per reconciliation. Used in tests to inject mock clients.
 	awsClientFactory func(scope *scope.ROSAControlPlaneScope) (rosaaws.Client, error)
 	// Exposing the restClientConfig for integration test. No need to initialize.
@@ -116,6 +120,7 @@ type ROSAControlPlaneReconciler struct {
 func (r *ROSAControlPlaneReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
 	log := logger.FromContext(ctx)
 	r.NewOCMClient = rosa.NewWrappedOCMClient
+	r.NewSeaplaneClient = rosa.NewSeaplaneClient
 
 	rosaControlPlane := &rosacontrolplanev1.ROSAControlPlane{}
 	c, err := ctrl.NewControllerManagedBy(mgr).
@@ -278,6 +283,11 @@ func (r *ROSAControlPlaneReconciler) reconcileNormal(ctx context.Context, rosaSc
 			return ctrl.Result{}, err
 		}
 	}
+
+	if seaplaneEnabled() {
+		return r.reconcileSeaplaneNormal(ctx, rosaScope, creator)
+	}
+
 	if r.NewOCMClient == nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create OCM client: NewOCMClient is nil")
 	}
@@ -503,6 +513,10 @@ func (r *ROSAControlPlaneReconciler) reconcileDelete(ctx context.Context, rosaSc
 	if !deleted {
 		// Reconcile after 1 min giving time for machinePools to be deleted.
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+
+	if seaplaneEnabled() {
+		return r.reconcileSeaplaneDelete(ctx, rosaScope, creator)
 	}
 
 	ocmClient, err := r.NewOCMClient(ctx, rosaScope)

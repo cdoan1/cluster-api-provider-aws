@@ -1,0 +1,509 @@
+//go:build e2e
+// +build e2e
+
+/*
+Copyright 2026 The Kubernetes Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package rosa_seaplane
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	v1alpha1 "github.com/openshift-online/rosa-seaplane-api/api/v1alpha1/public"
+	seaplaneclientset "github.com/openshift-online/rosa-seaplane-api/clientset"
+	spplatform "github.com/openshift-online/rosa-seaplane-api/clientset/platform"
+	sprest "github.com/openshift-online/rosa-seaplane-api/clientset/rest"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+
+	rosacontrolplanev1 "sigs.k8s.io/cluster-api-provider-aws/v2/controlplane/rosa/api/v1beta2"
+	"sigs.k8s.io/cluster-api-provider-aws/v2/test/e2e/shared"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+)
+
+const (
+	clusterReadyTimeout           = 90 * time.Minute
+	clusterDeletedTimeout         = 60 * time.Minute
+	oidcConfigReadyTimeout        = 15 * time.Minute
+	operatorRolesDeletedTimeout   = 10 * time.Minute
+	pollInterval                  = 30 * time.Second
+	seaplaneSanityNamespacePrefix = "rosa-seaplane-sanity"
+)
+
+// awsRegionRE matches standard and GovCloud AWS region names within a URL
+// hostname, mirroring the rosa CLI and Platform API SDK region extraction.
+var awsRegionRE = regexp.MustCompile(`[a-z]+-(?:[a-z]+-)+\d+`)
+
+// operatorRoleSpec mirrors the rosa CLI seaplane operator-role specs.
+type operatorRoleSpec struct {
+	suffix            string
+	serviceAccounts   []string
+	managedPolicyArns []string
+	isWorkerRole      bool
+}
+
+// seaplaneOperatorRoleSpecs mirrors getHCPOperatorRoles from the rosa CLI
+// (cmd/create/operatorroles/by_prefix_seaplane.go).
+func seaplaneOperatorRoleSpecs() []operatorRoleSpec {
+	return []operatorRoleSpec{
+		{
+			suffix:            "ingress",
+			serviceAccounts:   []string{"system:serviceaccount:openshift-ingress-operator:ingress-operator"},
+			managedPolicyArns: []string{"arn:aws:iam::aws:policy/service-role/ROSAIngressOperatorPolicy"},
+		},
+		{
+			suffix:            "cloud-controller-manager",
+			serviceAccounts:   []string{"system:serviceaccount:kube-system:kube-controller-manager"},
+			managedPolicyArns: []string{"arn:aws:iam::aws:policy/service-role/ROSAKubeControllerPolicy"},
+		},
+		{
+			suffix:            "ebs-csi",
+			serviceAccounts:   []string{"system:serviceaccount:openshift-cluster-csi-drivers:aws-ebs-csi-driver-controller-sa"},
+			managedPolicyArns: []string{"arn:aws:iam::aws:policy/service-role/ROSAAmazonEBSCSIDriverOperatorPolicy"},
+		},
+		{
+			suffix: "image-registry",
+			serviceAccounts: []string{
+				"system:serviceaccount:openshift-image-registry:cluster-image-registry-operator",
+				"system:serviceaccount:openshift-image-registry:registry",
+			},
+			managedPolicyArns: []string{"arn:aws:iam::aws:policy/service-role/ROSAImageRegistryOperatorPolicy"},
+		},
+		{
+			suffix:            "network-config",
+			serviceAccounts:   []string{"system:serviceaccount:openshift-cloud-network-config-controller:cloud-credentials"},
+			managedPolicyArns: []string{"arn:aws:iam::aws:policy/service-role/ROSACloudNetworkConfigOperatorPolicy"},
+		},
+		{
+			suffix:            "control-plane-operator",
+			serviceAccounts:   []string{"system:serviceaccount:kube-system:control-plane-operator"},
+			managedPolicyArns: []string{"arn:aws:iam::aws:policy/service-role/ROSAControlPlaneOperatorPolicy"},
+		},
+		{
+			suffix:            "node-pool-management",
+			serviceAccounts:   []string{"system:serviceaccount:kube-system:capa-controller-manager"},
+			managedPolicyArns: []string{"arn:aws:iam::aws:policy/service-role/ROSANodePoolManagementPolicy"},
+		},
+		{
+			suffix: "ROSA-Worker-Role",
+			managedPolicyArns: []string{
+				"arn:aws:iam::aws:policy/service-role/ROSAWorkerInstancePolicy",
+				"arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+			},
+			isWorkerRole: true,
+		},
+	}
+}
+
+func requireEnv(name string) string {
+	value := os.Getenv(name)
+	ExpectWithOffset(1, value).ToNot(BeEmpty(), fmt.Sprintf("environment variable %s must be set", name))
+	return value
+}
+
+func envOrDefault(name, defaultValue string) string {
+	value := os.Getenv(name)
+	if value == "" {
+		return defaultValue
+	}
+	return value
+}
+
+// seaplaneTestContext carries the AWS identity and clients shared by the spec.
+type seaplaneTestContext struct {
+	seaplaneClient seaplaneclientset.Interface
+	iamClient      *iam.Client
+	region         string
+	accountID      string
+	partition      string
+}
+
+func newSeaplaneTestContext(ctx context.Context) *seaplaneTestContext {
+	seaplaneURL := requireEnv("SEAPLANE_URL")
+	region := awsRegionRE.FindString(seaplaneURL)
+	ExpectWithOffset(1, region).ToNot(BeEmpty(),
+		fmt.Sprintf("cannot derive AWS region from SEAPLANE_URL %q", seaplaneURL))
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	identity, err := sts.NewFromConfig(awsCfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	ExpectWithOffset(1, identity.Account).ToNot(BeNil())
+	ExpectWithOffset(1, identity.Arn).ToNot(BeNil())
+
+	partition := "aws"
+	if parts := strings.Split(*identity.Arn, ":"); len(parts) > 1 {
+		partition = parts[1]
+	}
+
+	client, err := seaplaneclientset.NewForConfig(&sprest.Config{
+		Host:      seaplaneURL,
+		Region:    region,
+		AccountID: *identity.Account,
+		CallerARN: *identity.Arn,
+		AWSConfig: awsCfg,
+	})
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+	return &seaplaneTestContext{
+		seaplaneClient: client,
+		iamClient:      iam.NewFromConfig(awsCfg),
+		region:         region,
+		accountID:      *identity.Account,
+		partition:      partition,
+	}
+}
+
+// createSeaplaneOidcConfig creates a managed OIDC config and waits for it to
+// become Ready, returning its UID.
+func (c *seaplaneTestContext) createSeaplaneOidcConfig(ctx context.Context, name string) string {
+	created, err := c.seaplaneClient.SeaplaneV1alpha1().OidcConfigs().Create(ctx, &v1alpha1.OidcConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       v1alpha1.OidcConfigSpec{Type: "managed"},
+	}, spplatform.CreateOptions{})
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	ExpectWithOffset(1, created).ToNot(BeNil())
+
+	ExpectWithOffset(1, c.seaplaneClient.SeaplaneV1alpha1().OidcConfigs().WaitUntil(
+		ctx, name,
+		func(config *v1alpha1.OidcConfig) bool {
+			if config == nil {
+				return false
+			}
+			ginkgo.By(fmt.Sprintf("[wait] OIDC config %s phase: %s", name, config.Status.Phase))
+			return config.Status.Phase == v1alpha1.OidcConfigPhaseReady
+		},
+		pollInterval, oidcConfigReadyTimeout,
+	)).To(Succeed())
+
+	ready, err := c.seaplaneClient.SeaplaneV1alpha1().OidcConfigs().Get(ctx, name, spplatform.GetOptions{})
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return string(ready.UID)
+}
+
+func (c *seaplaneTestContext) deleteSeaplaneOidcConfig(ctx context.Context, name string) {
+	err := c.seaplaneClient.SeaplaneV1alpha1().OidcConfigs().Delete(ctx, name, spplatform.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return
+	}
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+}
+
+// createSeaplaneOperatorRoles creates the operator and worker roles for the
+// given prefix, mirroring `rosa create operator-roles --seaplane`.
+func (c *seaplaneTestContext) createSeaplaneOperatorRoles(ctx context.Context, prefix, oidcIssuerURL string) {
+	issuerDomain := oidcIssuerDomainFromURL(oidcIssuerURL)
+
+	for _, spec := range seaplaneOperatorRoleSpecs() {
+		roleName := fmt.Sprintf("%s-%s", prefix, spec.suffix)
+		trustPolicy := c.operatorRoleTrustPolicy(spec, issuerDomain)
+
+		tags := []iamtypes.Tag{
+			{Key: ptr.To("red-hat-managed"), Value: ptr.To("true")},
+			{Key: ptr.To("hypershiftPolicies"), Value: ptr.To("true")},
+			{Key: ptr.To("rosaOperatorRolePrefix"), Value: ptr.To(prefix)},
+			{Key: ptr.To("red-hat-managed-policies"), Value: ptr.To("true")},
+		}
+
+		_, err := c.iamClient.CreateRole(ctx, &iam.CreateRoleInput{
+			RoleName:                 ptr.To(roleName),
+			AssumeRolePolicyDocument: ptr.To(trustPolicy),
+			Description:              ptr.To(fmt.Sprintf("Operator role for ROSA HCP cluster %s (%s)", prefix, spec.suffix)),
+			Tags:                     tags,
+		})
+		if isAlreadyExists(err) {
+			continue
+		}
+		ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+		for _, policyArn := range spec.managedPolicyArns {
+			_, err := c.iamClient.AttachRolePolicy(ctx, &iam.AttachRolePolicyInput{
+				RoleName:  ptr.To(roleName),
+				PolicyArn: ptr.To(policyArn),
+			})
+			ExpectWithOffset(1, err).ToNot(HaveOccurred())
+		}
+
+		if spec.isWorkerRole {
+			_, err := c.iamClient.CreateInstanceProfile(ctx, &iam.CreateInstanceProfileInput{
+				InstanceProfileName: ptr.To(roleName),
+				Tags:                tags,
+			})
+			if !isAlreadyExists(err) {
+				ExpectWithOffset(1, err).ToNot(HaveOccurred())
+			}
+			_, err = c.iamClient.AddRoleToInstanceProfile(ctx, &iam.AddRoleToInstanceProfileInput{
+				InstanceProfileName: ptr.To(roleName),
+				RoleName:            ptr.To(roleName),
+			})
+			if err != nil && !isAlreadyExists(err) {
+				ExpectWithOffset(1, err).ToNot(HaveOccurred())
+			}
+		}
+	}
+}
+
+func (c *seaplaneTestContext) deleteSeaplaneOperatorRoles(ctx context.Context, prefix string) {
+	for _, spec := range seaplaneOperatorRoleSpecs() {
+		roleName := fmt.Sprintf("%s-%s", prefix, spec.suffix)
+		Eventually(func() error {
+			if spec.isWorkerRole {
+				_, err := c.iamClient.RemoveRoleFromInstanceProfile(ctx, &iam.RemoveRoleFromInstanceProfileInput{
+					InstanceProfileName: ptr.To(roleName),
+					RoleName:            ptr.To(roleName),
+				})
+				if err != nil && !isNoSuchEntity(err) {
+					return err
+				}
+				_, err = c.iamClient.DeleteInstanceProfile(ctx, &iam.DeleteInstanceProfileInput{
+					InstanceProfileName: ptr.To(roleName),
+				})
+				if err != nil && !isNoSuchEntity(err) {
+					return err
+				}
+			}
+			_, err := c.iamClient.DeleteRole(ctx, &iam.DeleteRoleInput{RoleName: ptr.To(roleName)})
+			if err != nil && !isNoSuchEntity(err) {
+				return err
+			}
+			return nil
+		}, operatorRolesDeletedTimeout, pollInterval).Should(Succeed())
+	}
+}
+
+// operatorRoleTrustPolicy builds the role trust policy document for a spec,
+// mirroring the rosa CLI seaplane operator-role creation.
+func (c *seaplaneTestContext) operatorRoleTrustPolicy(spec operatorRoleSpec, issuerDomain string) string {
+	if spec.isWorkerRole {
+		return `{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Service": ["ec2.amazonaws.com"]
+    },
+    "Action": "sts:AssumeRole"
+  }]
+}`
+	}
+
+	var subject any
+	if len(spec.serviceAccounts) == 1 {
+		subject = spec.serviceAccounts[0]
+	} else {
+		subject = spec.serviceAccounts
+	}
+	subjectJSON, err := json.Marshal(subject)
+	ExpectWithOffset(2, err).ToNot(HaveOccurred())
+
+	return fmt.Sprintf(`{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": {
+      "Federated": "arn:%s:iam::%s:oidc-provider/%s"
+    },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": {
+        "%s:sub": %s,
+        "%s:aud": "openshift"
+      }
+    }
+  }]
+}`,
+		c.partition, c.accountID, issuerDomain,
+		issuerDomain, string(subjectJSON), issuerDomain,
+	)
+}
+
+// oidcIssuerDomainFromURL derives the OIDC issuer domain (host + path without
+// scheme) from the issuer URL, mirroring the rosa CLI helper.
+func oidcIssuerDomainFromURL(issuerURL string) string {
+	parsed, err := url.ParseRequestURI(issuerURL)
+	ExpectWithOffset(1, err).ToNot(HaveOccurred())
+	return parsed.Host + parsed.Path
+}
+
+func isAlreadyExists(err error) bool {
+	var alreadyExists *iamtypes.EntityAlreadyExistsException
+	return errors.As(err, &alreadyExists)
+}
+
+func isNoSuchEntity(err error) bool {
+	var noSuchEntity *iamtypes.NoSuchEntityException
+	return errors.As(err, &noSuchEntity)
+}
+
+var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
+	var (
+		ctx       context.Context
+		namespace *corev1.Namespace
+		spCtx     *seaplaneTestContext
+	)
+
+	ginkgo.BeforeEach(func() {
+		Expect(e2eCtx.Environment.BootstrapClusterProxy).ToNot(BeNil(), "BootstrapClusterProxy can't be nil")
+		ctx = context.TODO()
+		namespace = shared.SetupSpecNamespace(ctx, seaplaneSanityNamespacePrefix, e2eCtx)
+	})
+
+	ginkgo.It("creates and deletes a seaplane v2 cluster via ROSAControlPlane", func() {
+		requireEnv("SEAPLANE_URL")
+		requireEnv("SEAPLANE_RELEASE_IMAGE")
+		subnetID := requireEnv("SEAPLANE_SUBNET_ID")
+		clusterName := envOrDefault("SEAPLANE_CLUSTER_NAME", fmt.Sprintf("sp-e2e-%d", time.Now().Unix()))
+		operatorRolesPrefix := envOrDefault("SEAPLANE_OPERATOR_ROLES_PREFIX", clusterName)
+		oidcConfigName := clusterName + ".oidc"
+
+		spCtx = newSeaplaneTestContext(ctx)
+
+		// ── Phase 1: OIDC config ────────────────────────────────────────
+		ginkgo.By("Creating managed OIDC config via the Platform API")
+		oidcUID := spCtx.createSeaplaneOidcConfig(ctx, oidcConfigName)
+		ginkgo.DeferCleanup(func(ctx context.Context) {
+			ginkgo.By("Teardown: delete OIDC config")
+			spCtx.deleteSeaplaneOidcConfig(ctx, oidcConfigName)
+		})
+
+		oidcConfig, err := spCtx.seaplaneClient.SeaplaneV1alpha1().OidcConfigs().Get(ctx, oidcConfigName, spplatform.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(oidcConfig.Spec.IssuerUrl).ToNot(BeEmpty())
+
+		// ── Phase 2: operator roles ─────────────────────────────────────
+		ginkgo.By("Creating operator roles via AWS IAM")
+		spCtx.createSeaplaneOperatorRoles(ctx, operatorRolesPrefix, oidcConfig.Spec.IssuerUrl)
+		ginkgo.DeferCleanup(func(ctx context.Context) {
+			ginkgo.By("Teardown: delete operator roles")
+			spCtx.deleteSeaplaneOperatorRoles(ctx, operatorRolesPrefix)
+		}, ginkgo.NodeTimeout(operatorRolesDeletedTimeout))
+
+		rolesRef := rosacontrolplanev1.AWSRolesRef{
+			IngressARN:              fmt.Sprintf("arn:%s:iam::%s:role/%s-ingress", spCtx.partition, spCtx.accountID, operatorRolesPrefix),
+			ImageRegistryARN:        fmt.Sprintf("arn:%s:iam::%s:role/%s-image-registry", spCtx.partition, spCtx.accountID, operatorRolesPrefix),
+			StorageARN:              fmt.Sprintf("arn:%s:iam::%s:role/%s-ebs-csi", spCtx.partition, spCtx.accountID, operatorRolesPrefix),
+			NetworkARN:              fmt.Sprintf("arn:%s:iam::%s:role/%s-network-config", spCtx.partition, spCtx.accountID, operatorRolesPrefix),
+			KubeCloudControllerARN:  fmt.Sprintf("arn:%s:iam::%s:role/%s-cloud-controller-manager", spCtx.partition, spCtx.accountID, operatorRolesPrefix),
+			NodePoolManagementARN:   fmt.Sprintf("arn:%s:iam::%s:role/%s-node-pool-management", spCtx.partition, spCtx.accountID, operatorRolesPrefix),
+			ControlPlaneOperatorARN: fmt.Sprintf("arn:%s:iam::%s:role/%s-control-plane-operator", spCtx.partition, spCtx.accountID, operatorRolesPrefix),
+		}
+
+		// ── Phase 3: ROSAControlPlane ───────────────────────────────────
+		ginkgo.By("Applying Cluster and ROSAControlPlane to the management cluster")
+		bootstrapClient := e2eCtx.Environment.BootstrapClusterProxy.GetClient()
+
+		ownerCluster := &clusterv1.Cluster{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterName,
+				Namespace: namespace.Name,
+			},
+		}
+		Expect(bootstrapClient.Create(ctx, ownerCluster)).To(Succeed())
+
+		rosaControlPlane := &rosacontrolplanev1.ROSAControlPlane{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      clusterName,
+				Namespace: namespace.Name,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: clusterv1.GroupVersion.String(),
+						Kind:       "Cluster",
+						Name:       ownerCluster.Name,
+						UID:        ownerCluster.UID,
+					},
+				},
+			},
+			Spec: rosacontrolplanev1.RosaControlPlaneSpec{
+				RosaClusterName: clusterName,
+				Region:          spCtx.region,
+				Version:         "4.19.0",
+				Subnets:         []string{subnetID},
+				OIDCID:          oidcUID,
+				RolesRef:        rolesRef,
+				EndpointAccess:  rosacontrolplanev1.Public,
+			},
+		}
+		Expect(bootstrapClient.Create(ctx, rosaControlPlane)).To(Succeed())
+
+		// ── Phase 4: wait for the cluster to become ready ───────────────
+		ginkgo.By("Waiting for the ROSAControlPlane to become ready")
+		Eventually(func() (bool, error) {
+			cp := &rosacontrolplanev1.ROSAControlPlane{}
+			if err := bootstrapClient.Get(ctx, types.NamespacedName{
+				Name: clusterName, Namespace: namespace.Name,
+			}, cp); err != nil {
+				return false, err
+			}
+			return cp.Status.Ready, nil
+		}, clusterReadyTimeout, pollInterval).Should(BeTrue())
+
+		// Cross-check the cluster state via the Platform API.
+		cluster, err := spCtx.seaplaneClient.SeaplaneV1alpha1().Clusters().Get(ctx, clusterName, spplatform.GetOptions{})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(cluster.Status.Phase).To(Equal(v1alpha1.ClusterPhaseReady))
+
+		cp := &rosacontrolplanev1.ROSAControlPlane{}
+		Expect(bootstrapClient.Get(ctx, types.NamespacedName{
+			Name: clusterName, Namespace: namespace.Name,
+		}, cp)).To(Succeed())
+		Expect(cp.Status.ID).To(Equal(string(cluster.UID)))
+
+		// ── Phase 5: delete ─────────────────────────────────────────────
+		ginkgo.By("Deleting the ROSAControlPlane")
+		Expect(bootstrapClient.Delete(ctx, cp)).To(Succeed())
+
+		Eventually(func() (bool, error) {
+			err := bootstrapClient.Get(ctx, types.NamespacedName{
+				Name: clusterName, Namespace: namespace.Name,
+			}, &rosacontrolplanev1.ROSAControlPlane{})
+			if apierrors.IsNotFound(err) {
+				return true, nil
+			}
+			return false, err
+		}, clusterDeletedTimeout, pollInterval).Should(BeTrue())
+
+		// Verify the seaplane cluster is gone from the Platform API.
+		Eventually(func() (bool, error) {
+			_, err := spCtx.seaplaneClient.SeaplaneV1alpha1().Clusters().Get(ctx, clusterName, spplatform.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				return true, nil
+			}
+			return false, err
+		}, clusterDeletedTimeout, pollInterval).Should(BeTrue())
+	})
+
+	ginkgo.AfterEach(func() {
+		shared.DumpSpecResourcesAndCleanup(ctx, "", namespace, e2eCtx)
+	})
+})
