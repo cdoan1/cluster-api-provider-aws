@@ -258,11 +258,19 @@ the terraform-provider-rhcs seaplane sanity test. It:
 #### Prerequisites
 
 - **AWS credentials** with permission to create IAM roles, OIDC-related
-  resources, and to call the Platform API (SigV4). Same profile setup as
-  other capa e2e runs:
+  resources, and to call the Platform API (SigV4). Note that the e2e
+  framework normally replaces `AWS_B64ENCODED_CREDENTIALS` with the
+  CloudFormation bootstrapper user's keys, which the Platform API
+  rejects — the seaplane suite captures your value at startup and
+  restores it into the manager's credentials secret, so encode from a
+  principal the Platform API accepts:
   ```bash
-  go run ./cmd/clusterawsadm bootstrap credentials   # prints export lines
+  export AWS_B64ENCODED_CREDENTIALS=$(go run ./cmd/clusterawsadm bootstrap credentials encode-as-profile \
+    --profile <profile> --region us-east-1)
   ```
+  ⚠️ If the profile assumes a role, the encoded credentials are
+  **temporary** (default 1h). Encode right before the run; a run that
+  outlives the session fails AWS calls mid-flight.
 - **Docker** (the suite runs a kind management cluster) and the standard
   capa e2e tooling (`make e2e-image` builds the controller image).
 - **A pre-existing VPC subnet** for the hosted control plane and worker
