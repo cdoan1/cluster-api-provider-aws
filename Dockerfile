@@ -28,6 +28,12 @@ WORKDIR /workspace
 # Copy the Go Modules manifests
 COPY go.mod go.mod
 COPY go.sum go.sum
+# The seaplane-v2 branch replaces rosa-seaplane-api with a sibling checkout
+# (../rosa-seaplane-api). The e2e-image target stages that checkout into the
+# build context; copy it to the path the replace directives resolve to from
+# /workspace. Drop this (and the staging in the Makefile) once the replaces
+# are swapped for published module versions.
+COPY rosa-seaplane-api /rosa-seaplane-api
 # Cache deps before building and copying source so that we don't need to re-download as much
 # and so that source changes don't invalidate our downloaded layer
 RUN  --mount=type=cache,target=/root/.local/share/golang \

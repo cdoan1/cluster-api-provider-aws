@@ -439,9 +439,27 @@ generate-test-infra-prowjobs: $(PROWJOB_GEN) ## Generates the prowjob configurat
 		-templates-dir "$(TEST_INFRA_DIR)/config/jobs/kubernetes-sigs/cluster-api-provider-aws/templates" \
 		-output-dir "$(TEST_INFRA_DIR)/config/jobs/kubernetes-sigs/cluster-api-provider-aws"
 
+# SEAPLANE_API_DIR points at the sibling rosa-seaplane-api checkout that the
+# go.mod replace directives reference. The e2e-image target stages a build
+# context containing it so the container build can resolve the replaces.
+SEAPLANE_API_DIR ?= ../rosa-seaplane-api
+
+# stage-seaplane-context assembles a build context with the capa sources at
+# the root and the replaced rosa-seaplane-api modules as a sibling, matching
+# the layout the go.mod replace directives expect.
+.PHONY: stage-seaplane-context
+stage-seaplane-context:
+	rm -rf .e2e-build-context
+	mkdir -p .e2e-build-context/rosa-seaplane-api
+	rsync -a --exclude .git --exclude .e2e-build-context --exclude hack/tools/bin \
+		--exclude tmp-envtest --exclude bin ./ .e2e-build-context/
+	rsync -a --exclude .git --exclude bin \
+		$(SEAPLANE_API_DIR)/api $(SEAPLANE_API_DIR)/clientset .e2e-build-context/rosa-seaplane-api/
+
 .PHONY: e2e-image
 e2e-image: docker-pull-prerequisites $(TOOLS_BIN_DIR)/start.sh $(TOOLS_BIN_DIR)/restart.sh ## Build an e2e test image
-	docker build --build-arg builder_image=$(GO_CONTAINER_IMAGE) -f Dockerfile --tag="gcr.io/k8s-staging-cluster-api/capa-manager:e2e" .
+	$(MAKE) stage-seaplane-context
+	docker build --build-arg builder_image=$(GO_CONTAINER_IMAGE) -f .e2e-build-context/Dockerfile --tag="gcr.io/k8s-staging-cluster-api/capa-manager:e2e" .e2e-build-context
 
 .PHONY: install-setup-envtest
 install-setup-envtest: # Install setup-envtest so that setup-envtest's eval is executed after the tool has been installed.
