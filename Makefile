@@ -492,7 +492,7 @@ test-e2e-eks: generate-test-flavors $(KIND) $(SSM_PLUGIN) $(KUSTOMIZE) e2e-image
 ## Optional: SEAPLANE_CLUSTER_NAME, SEAPLANE_OPERATOR_ROLES_PREFIX, SEAPLANE_BASE_DOMAIN.
 ## The controller manager is deployed with EXP_ROSA=true EXP_ROSA_SEAPLANE_V2=true, which
 ## can be overridden via the same-named environment variables.
-test-e2e-rosa-seaplane: $(KIND) $(SSM_PLUGIN) $(KUSTOMIZE) e2e-image ## Run ROSA seaplane e2e tests
+test-e2e-rosa-seaplane: $(KIND) $(SSM_PLUGIN) $(KUSTOMIZE) generate-test-flavors e2e-image ## Run ROSA seaplane e2e tests
 	EXP_ROSA=true EXP_ROSA_SEAPLANE_V2=true time go run github.com/onsi/ginkgo/v2/ginkgo -tags=e2e $(GINKGO_ARGS) ./test/e2e/suites/rosa_seaplane/... -- -config-path="$(E2E_CONF_PATH)" $(E2E_ARGS)
 
 CONFORMANCE_E2E_ARGS ?= -kubetest.config-file=$(KUBETEST_CONF_PATH)
