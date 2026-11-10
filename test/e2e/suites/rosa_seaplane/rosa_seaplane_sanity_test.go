@@ -453,12 +453,15 @@ var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
 				Namespace: namespace.Name,
 			},
 			// An all-zero ClusterSpec is omitted by its omitzero JSON tag, which the
-			// v1beta2 Cluster CRD rejects with "spec: Required value"; set a minimal
-			// cluster network so the spec serializes non-empty.
+			// v1beta2 Cluster CRD rejects with "spec: Required value"; the CAPI
+			// validating webhook also requires one of controlPlaneRef,
+			// infrastructureRef or topology. Point the control plane ref at the
+			// ROSAControlPlane, which is created right after the Cluster.
 			Spec: clusterv1.ClusterSpec{
-				ClusterNetwork: clusterv1.ClusterNetwork{
-					Services: clusterv1.NetworkRanges{CIDRBlocks: []string{"172.30.0.0/16"}},
-					Pods:     clusterv1.NetworkRanges{CIDRBlocks: []string{"10.128.0.0/14"}},
+				ControlPlaneRef: clusterv1.ContractVersionedObjectReference{
+					APIGroup: rosacontrolplanev1.GroupVersion.Group,
+					Kind:     "ROSAControlPlane",
+					Name:     clusterName,
 				},
 			},
 		}
