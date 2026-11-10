@@ -767,7 +767,7 @@ func ensureTestImageUploaded(ctx context.Context, e2eCtx *E2EContext) error {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, "docker", "inspect", "--format='{{index .Id}}'", localE2EImage)
+	cmd := exec.CommandContext(ctx, "docker", "inspect", "--format={{.Id}}", localE2EImage)
 	var stdOut bytes.Buffer
 	cmd.Stdout = &stdOut
 	err := cmd.Run()
