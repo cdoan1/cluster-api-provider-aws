@@ -41,6 +41,15 @@ import (
 	"sigs.k8s.io/cluster-api-provider-aws/v2/test/e2e/shared"
 )
 
+// userAWSCredentials captures the user-provided AWS_B64ENCODED_CREDENTIALS
+// at package initialization — before the shared suite setup replaces the
+// variable with credentials for the CloudFormation bootstrapper IAM user.
+// The Seaplane Platform API rejects that bootstrapper principal (every
+// controller request fails with an unrecognized 4xx), while the user's own
+// identity is accepted, so the seaplane suite re-points the manager's
+// credentials secret at the captured value.
+var userAWSCredentials = os.Getenv("AWS_B64ENCODED_CREDENTIALS")
+
 // seaplaneManagerEnvVars are the environment variables consumed by the capa
 // manager when the ROSASeaplaneV2 feature gate is enabled. They are patched
 // into the controller deployment by this suite rather than declared in
@@ -88,6 +97,14 @@ func patchSeaplaneManagerEnv(e2eCtx *shared.E2EContext) {
 	// (and its webhooks) are serving before anything else touches the cluster.
 	waitManagerRollout(c, key)
 
+	// The shared suite setup overwrites AWS_B64ENCODED_CREDENTIALS with the
+	// bootstrapper user's keys, which the Platform API rejects. Restore the
+	// user's credentials in the manager's credentials secret; the credential
+	// chain re-reads the secret on every reconcile.
+	if userAWSCredentials != "" {
+		patchManagerCredentials(c, userAWSCredentials)
+	}
+
 	// The shared suite helper creates the controller identity right after
 	// clusterctl init, but that can race the manager's webhook readiness
 	// (failurePolicy=fail) and its error is swallowed. Ensure the identity
@@ -112,6 +129,27 @@ func waitManagerRollout(c client.Client, key types.NamespacedName) {
 			deployment.Status.UpdatedReplicas == replicas &&
 			deployment.Status.AvailableReplicas == replicas, nil
 	}, 5*time.Minute, 5*time.Second).Should(BeTrue(), "capa manager rollout should complete")
+}
+
+// patchManagerCredentials re-points the capa manager's credentials secret at
+// the user-provided encoded credentials (a base64 ini profile), replacing the
+// bootstrapper user's keys that clusterctl installed.
+func patchManagerCredentials(c client.Client, encoded string) {
+	ginkgo.By("Restoring the user's AWS credentials in the capa manager credentials secret")
+	key := types.NamespacedName{Namespace: "capa-system", Name: "manager-bootstrap-credentials"}
+
+	err := clientgoretry.RetryOnConflict(clientgoretry.DefaultRetry, func() error {
+		secret := &corev1.Secret{}
+		if err := c.Get(context.TODO(), key, secret); err != nil {
+			return err
+		}
+		if string(secret.Data["credentials"]) == encoded {
+			return nil
+		}
+		secret.Data["credentials"] = []byte(encoded)
+		return c.Update(context.TODO(), secret)
+	})
+	Expect(err).ToNot(HaveOccurred(), "failed to update the capa manager credentials secret")
 }
 
 // ensureControllerIdentity creates the default AWSClusterControllerIdentity
