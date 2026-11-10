@@ -22,9 +22,12 @@ limitations under the License.
 package rosa_seaplane
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
@@ -156,20 +159,25 @@ func waitManagerRollout(c client.Client, key types.NamespacedName) {
 
 // patchManagerCredentials re-points the capa manager's credentials secret at
 // the user-provided encoded credentials (a base64 ini profile), replacing the
-// bootstrapper user's keys that clusterctl installed.
+// bootstrapper user's keys that clusterctl installed. The secret's data value
+// holds the raw ini profile — the base64 envelope is a transport encoding
+// handled by the API server — so the blob must be decoded before writing.
 func patchManagerCredentials(c client.Client, encoded string) {
 	ginkgo.By("Restoring the user's AWS credentials in the capa manager credentials secret")
 	key := types.NamespacedName{Namespace: "capa-system", Name: "capa-manager-bootstrap-credentials"}
 
-	err := clientgoretry.RetryOnConflict(clientgoretry.DefaultRetry, func() error {
+	credentials, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
+	Expect(err).ToNot(HaveOccurred(), "AWS_B64ENCODED_CREDENTIALS is not valid base64")
+
+	err = clientgoretry.RetryOnConflict(clientgoretry.DefaultRetry, func() error {
 		secret := &corev1.Secret{}
 		if err := c.Get(context.TODO(), key, secret); err != nil {
 			return err
 		}
-		if string(secret.Data["credentials"]) == encoded {
+		if bytes.Equal(secret.Data["credentials"], credentials) {
 			return nil
 		}
-		secret.Data["credentials"] = []byte(encoded)
+		secret.Data["credentials"] = credentials
 		return c.Update(context.TODO(), secret)
 	})
 	Expect(err).ToNot(HaveOccurred(), "failed to update the capa manager credentials secret")
