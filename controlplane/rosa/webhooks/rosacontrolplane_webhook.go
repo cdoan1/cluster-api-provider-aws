@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	rosacontrolplanev1 "sigs.k8s.io/cluster-api-provider-aws/v2/controlplane/rosa/api/v1beta2"
+	"sigs.k8s.io/cluster-api-provider-aws/v2/feature"
 )
 
 // ROSAControlPlane implements a custom validation webhook for ROSAControlPlane.
@@ -79,12 +80,12 @@ func (w *ROSAControlPlane) ValidateCreate(_ context.Context, obj runtime.Object)
 		allErrs = append(allErrs, err)
 	}
 
-	if err := w.validateRosaRoleConfig(r); err != nil {
-		allErrs = append(allErrs, err)
-	}
-
 	allErrs = append(allErrs, w.validateROSANetwork(r)...)
 	allErrs = append(allErrs, r.Spec.AdditionalTags.Validate()...)
+
+	if err := w.validateRosaRoleConfigForMode(r); err != nil {
+		allErrs = append(allErrs, err)
+	}
 
 	if err := w.validateROSANetworkRef(r); err != nil {
 		allErrs = append(allErrs, err)
@@ -101,6 +102,52 @@ func (w *ROSAControlPlane) ValidateCreate(_ context.Context, obj runtime.Object)
 		r.Name,
 		allErrs,
 	)
+}
+
+// validateRosaRoleConfigForMode dispatches role validation to the seaplane
+// v2 variant when the ROSASeaplaneV2 feature gate is enabled; the OCM
+// account roles (installer, support, worker) are not part of the v2 flow.
+func (w *ROSAControlPlane) validateRosaRoleConfigForMode(r *rosacontrolplanev1.ROSAControlPlane) *field.Error {
+	if feature.Gates.Enabled(feature.ROSASeaplaneV2) {
+		return w.validateRosaRoleConfigSeaplane(r)
+	}
+	return w.validateRosaRoleConfig(r)
+}
+
+// validateRosaRoleConfigSeaplane validates the role configuration for the
+// seaplane v2 flow: the OIDC config and the operator roles are required, but
+// the OCM account roles (installerRoleARN, supportRoleARN, workerRoleARN)
+// and the KMS provider role do not exist in v2 and must not be demanded.
+func (w *ROSAControlPlane) validateRosaRoleConfigSeaplane(r *rosacontrolplanev1.ROSAControlPlane) *field.Error {
+	if r.Spec.RosaRoleConfigRef != nil {
+		return nil
+	}
+
+	if r.Spec.OIDCID == "" {
+		return field.Invalid(field.NewPath("spec.oidcID"), r.Spec.OIDCID, "must be specified")
+	}
+	if r.Spec.RolesRef.IngressARN == "" {
+		return field.Invalid(field.NewPath("spec.rolesRef.ingressARN"), r.Spec.RolesRef.IngressARN, "must be specified")
+	}
+	if r.Spec.RolesRef.ImageRegistryARN == "" {
+		return field.Invalid(field.NewPath("spec.rolesRef.imageRegistryARN"), r.Spec.RolesRef.ImageRegistryARN, "must be specified")
+	}
+	if r.Spec.RolesRef.StorageARN == "" {
+		return field.Invalid(field.NewPath("spec.rolesRef.storageARN"), r.Spec.RolesRef.StorageARN, "must be specified")
+	}
+	if r.Spec.RolesRef.NetworkARN == "" {
+		return field.Invalid(field.NewPath("spec.rolesRef.networkARN"), r.Spec.RolesRef.NetworkARN, "must be specified")
+	}
+	if r.Spec.RolesRef.KubeCloudControllerARN == "" {
+		return field.Invalid(field.NewPath("spec.rolesRef.kubeCloudControllerARN"), r.Spec.RolesRef.KubeCloudControllerARN, "must be specified")
+	}
+	if r.Spec.RolesRef.NodePoolManagementARN == "" {
+		return field.Invalid(field.NewPath("spec.rolesRef.nodePoolManagementARN"), r.Spec.RolesRef.NodePoolManagementARN, "must be specified")
+	}
+	if r.Spec.RolesRef.ControlPlaneOperatorARN == "" {
+		return field.Invalid(field.NewPath("spec.rolesRef.controlPlaneOperatorARN"), r.Spec.RolesRef.ControlPlaneOperatorARN, "must be specified")
+	}
+	return nil
 }
 
 func (w *ROSAControlPlane) validateClusterRegistryConfig(r *rosacontrolplanev1.ROSAControlPlane) *field.Error {
@@ -137,7 +184,7 @@ func (w *ROSAControlPlane) ValidateUpdate(_ context.Context, oldObj, newObj runt
 		allErrs = append(allErrs, err)
 	}
 
-	if err := w.validateRosaRoleConfig(r); err != nil {
+	if err := w.validateRosaRoleConfigForMode(r); err != nil {
 		allErrs = append(allErrs, err)
 	}
 
@@ -320,7 +367,10 @@ func (w *ROSAControlPlane) validateROSANetworkRef(r *rosacontrolplanev1.ROSACont
 		return field.Required(field.NewPath("spec.subnets"), "spec.subnets cannot be empty when spec.rosaNetworkRef is unspecified")
 	}
 
-	if r.Spec.ROSANetworkRef == nil && r.Spec.AvailabilityZones == nil {
+	// On the seaplane v2 path the availability zone is derived from the
+	// control plane subnet via EC2, so an explicit list is not required.
+	if r.Spec.ROSANetworkRef == nil && r.Spec.AvailabilityZones == nil &&
+		!feature.Gates.Enabled(feature.ROSASeaplaneV2) {
 		return field.Required(field.NewPath("spec.availabilityZones"), "spec.availabilityZones cannot be empty when spec.rosaNetworkRef is unspecified")
 	}
 

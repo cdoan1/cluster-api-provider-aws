@@ -17,6 +17,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// Package rosa_seaplane hosts the ROSA v2 Seaplane Platform API e2e suite:
+// the sanity spec and the manager environment wiring it depends on.
 package rosa_seaplane
 
 import (
