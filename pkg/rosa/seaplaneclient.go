@@ -160,25 +160,34 @@ func NewSeaplaneClientForSession(ctx context.Context, awsCfg awsv2.Config, regio
 	}, region)
 }
 
-// WithSeaplaneAPIErrorDetails includes field-level validation causes
-// returned by the Platform API, mirroring the rosa CLI's
-// seaplane.WithAPIErrorDetails.
+// WithSeaplaneAPIErrorDetails includes the HTTP status code, reason and any
+// field-level validation causes returned by the Platform API. The clientset
+// surfaces non-standard gateway error bodies as generic errors with reason
+// "unknown", which otherwise hides the actual status code (e.g. a 403).
 func WithSeaplaneAPIErrorDetails(err error) error {
 	var statusError apierrors.APIStatus
 	if !errors.As(err, &statusError) {
 		return err
 	}
-	details := statusError.Status().Details
-	if details == nil || len(details.Causes) == 0 {
-		return err
-	}
-	causes := make([]string, 0, len(details.Causes))
-	for _, cause := range details.Causes {
-		if cause.Field != "" {
-			causes = append(causes, fmt.Sprintf("%s: %s", cause.Field, cause.Message))
-		} else {
-			causes = append(causes, cause.Message)
+	status := statusError.Status()
+
+	var causes []string
+	if details := status.Details; details != nil {
+		for _, cause := range details.Causes {
+			if cause.Field != "" {
+				causes = append(causes, fmt.Sprintf("%s: %s", cause.Field, cause.Message))
+			} else {
+				causes = append(causes, cause.Message)
+			}
 		}
 	}
-	return fmt.Errorf("%w (%s)", err, strings.Join(causes, "; "))
+
+	detailed := fmt.Errorf("%w [http status: %d, reason: %s", err, status.Code, status.Reason)
+	if status.Message != "" && status.Message != err.Error() {
+		detailed = fmt.Errorf("%s, message: %s", detailed, status.Message)
+	}
+	if len(causes) > 0 {
+		detailed = fmt.Errorf("%s, causes: %s", detailed, strings.Join(causes, "; "))
+	}
+	return fmt.Errorf("%s]", detailed)
 }

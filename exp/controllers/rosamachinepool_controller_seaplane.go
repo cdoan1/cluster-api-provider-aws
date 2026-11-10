@@ -71,7 +71,7 @@ func (r *ROSAMachinePoolReconciler) reconcileSeaplaneNormal(
 
 	nodePool, err := nodePools.Get(ctx, nodePoolName, platform.GetOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("failed to get seaplane node pool %q: %w", nodePoolName, err)
+		return ctrl.Result{}, fmt.Errorf("failed to get seaplane node pool %q: %w", nodePoolName, rosa.WithSeaplaneAPIErrorDetails(err))
 	}
 
 	if nodePool == nil || apierrors.IsNotFound(err) {
@@ -98,7 +98,7 @@ func (r *ROSAMachinePoolReconciler) createSeaplaneNodePool(
 	clusterName := rosaControlPlaneScope.ControlPlane.Spec.RosaClusterName
 	cluster, err := seaplaneClient.SeaplaneV1alpha1().Clusters().Get(ctx, clusterName, platform.GetOptions{})
 	if err != nil {
-		return fmt.Errorf("failed to get parent cluster %q: %w", clusterName, err)
+		return fmt.Errorf("failed to get parent cluster %q: %w", clusterName, rosa.WithSeaplaneAPIErrorDetails(err))
 	}
 
 	awsPlatform := cluster.Spec.HostedCluster.Platform.AWS
@@ -256,7 +256,7 @@ func (r *ROSAMachinePoolReconciler) reconcileSeaplaneDelete(
 
 	nodePool, err := nodePools.Get(ctx, nodePoolName, platform.GetOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("failed to get seaplane node pool %q: %w", nodePoolName, err)
+		return fmt.Errorf("failed to get seaplane node pool %q: %w", nodePoolName, rosa.WithSeaplaneAPIErrorDetails(err))
 	}
 	if nodePool == nil || apierrors.IsNotFound(err) {
 		// node pool is deleted, removing finalizer.

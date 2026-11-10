@@ -67,7 +67,7 @@ func (r *ROSAControlPlaneReconciler) reconcileSeaplaneNormal(
 
 	cluster, err := clusters.Get(ctx, name, platform.GetOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("failed to get seaplane cluster %q: %w", name, err)
+		return ctrl.Result{}, fmt.Errorf("failed to get seaplane cluster %q: %w", name, rosa.WithSeaplaneAPIErrorDetails(err))
 	}
 
 	if cluster == nil || apierrors.IsNotFound(err) {
@@ -301,7 +301,7 @@ func (r *ROSAControlPlaneReconciler) reconcileSeaplaneDelete(
 
 	cluster, err := clusters.Get(ctx, name, platform.GetOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, fmt.Errorf("failed to get seaplane cluster %q: %w", name, err)
+		return ctrl.Result{}, fmt.Errorf("failed to get seaplane cluster %q: %w", name, rosa.WithSeaplaneAPIErrorDetails(err))
 	}
 	if cluster == nil || apierrors.IsNotFound(err) {
 		// cluster is deleted, removing finalizer.
