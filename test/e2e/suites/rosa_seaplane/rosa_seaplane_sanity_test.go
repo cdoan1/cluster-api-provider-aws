@@ -304,7 +304,24 @@ func (c *seaplaneTestContext) deleteSeaplaneOperatorRoles(ctx context.Context, p
 					return err
 				}
 			}
-			_, err := c.iamClient.DeleteRole(ctx, &iam.DeleteRoleInput{RoleName: ptr.To(roleName)})
+			// IAM refuses to delete a role that still has policies attached;
+			// detach everything (managed policies and inline) first.
+			attached, err := c.iamClient.ListAttachedRolePolicies(ctx, &iam.ListAttachedRolePoliciesInput{
+				RoleName: ptr.To(roleName),
+			})
+			if err != nil && !isNoSuchEntity(err) {
+				return err
+			}
+			for _, policy := range attached.AttachedPolicies {
+				_, err := c.iamClient.DetachRolePolicy(ctx, &iam.DetachRolePolicyInput{
+					RoleName:  ptr.To(roleName),
+					PolicyArn: policy.PolicyArn,
+				})
+				if err != nil && !isNoSuchEntity(err) {
+					return err
+				}
+			}
+			_, err = c.iamClient.DeleteRole(ctx, &iam.DeleteRoleInput{RoleName: ptr.To(roleName)})
 			if err != nil && !isNoSuchEntity(err) {
 				return err
 			}
@@ -435,6 +452,9 @@ var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
 				Name:      clusterName,
 				Namespace: namespace.Name,
 			},
+			// An unset Spec serializes as spec:null, which the v1beta2 Cluster CRD
+			// rejects with "spec: Required value".
+			Spec: clusterv1.ClusterSpec{},
 		}
 		Expect(bootstrapClient.Create(ctx, ownerCluster)).To(Succeed())
 
