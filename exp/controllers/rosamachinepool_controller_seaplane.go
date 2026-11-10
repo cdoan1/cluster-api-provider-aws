@@ -111,11 +111,18 @@ func (r *ROSAMachinePoolReconciler) createSeaplaneNodePool(
 		return fmt.Errorf("cannot derive worker instance profile from control plane roles ref")
 	}
 
-	releaseImage := cluster.Spec.HostedCluster.Release.Image
-	if mpVersion := machinePoolScope.RosaMachinePool.Spec.Version; mpVersion != "" && mpVersion != cluster.Status.Version {
-		return fmt.Errorf(
-			"rosaMachinePoolSpec.version %q does not match cluster version %q; node pool upgrades are not reconciled by the seaplane path",
-			mpVersion, cluster.Status.Version)
+	// Mirror the rosa CLI create pattern: the release image is only sent when
+	// the machine pool requests an explicit version (which must match the
+	// cluster's running version); otherwise it is left unset and the platform
+	// defaults the node pool to the cluster's release.
+	releaseImage := ""
+	if mpVersion := machinePoolScope.RosaMachinePool.Spec.Version; mpVersion != "" {
+		if mpVersion != cluster.Status.Version {
+			return fmt.Errorf(
+				"rosaMachinePoolSpec.version %q does not match cluster version %q; node pool upgrades are not reconciled by the seaplane path",
+				mpVersion, cluster.Status.Version)
+		}
+		releaseImage = cluster.Spec.HostedCluster.Release.Image
 	}
 
 	subnetID := machinePoolScope.RosaMachinePool.Spec.Subnet

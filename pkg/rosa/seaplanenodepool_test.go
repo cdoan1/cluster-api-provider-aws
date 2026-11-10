@@ -121,7 +121,8 @@ func TestBuildSeaplaneNodePool(t *testing.T) {
 	g.Expect(np.Spec.Labels).To(Equal(map[string]string{"node-role": "worker"}))
 	g.Expect(np.Spec.Tags).To(Equal(map[string]string{"owner": "capa"}))
 	g.Expect(*np.Spec.AutoRepair).To(BeTrue())
-	g.Expect(string(np.Spec.EC2InstanceMetadataHttpTokens)).To(Equal("required"))
+	g.Expect(string(np.Spec.EC2InstanceMetadataHttpTokens)).To(BeEmpty(),
+		"the IMDS token requirement is only sent when explicitly set")
 	g.Expect(np.Spec.NodePool.TuningConfig).To(Equal([]corev1.LocalObjectReference{{Name: "tuning-1"}}))
 	g.Expect(*np.Spec.NodePool.NodeDrainTimeout).To(Equal(mustDuration(t, "5m")))
 }

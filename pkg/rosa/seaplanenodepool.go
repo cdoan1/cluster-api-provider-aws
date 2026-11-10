@@ -172,7 +172,11 @@ func BuildSeaplaneNodePool(params SeaplaneNodePoolParams) (*seaplanev1alpha1.Nod
 	}
 
 	np.Spec.AutoRepair = ptr.To(spec.AutoRepair)
-	np.Spec.EC2InstanceMetadataHttpTokens = toSeaplaneEC2MetadataHTTPTokens(spec.Ec2MetadataHTTPTokens)
+	// Mirror the rosa CLI: only send the IMDS token requirement when the CR
+	// explicitly sets it; the platform default is "required".
+	if spec.Ec2MetadataHTTPTokens != "" {
+		np.Spec.EC2InstanceMetadataHttpTokens = toSeaplaneEC2MetadataHTTPTokens(spec.Ec2MetadataHTTPTokens)
+	}
 
 	if len(spec.AdditionalTags) > 0 {
 		np.Spec.Tags = make(map[string]string, len(spec.AdditionalTags))
@@ -235,7 +239,8 @@ func toSeaplanePlacement(spot *expinfrav1.RosaSpotMarketOptions) *hypershiftv1be
 }
 
 // toSeaplaneEC2MetadataHTTPTokens maps the RosaMachinePoolSpec IMDS setting
-// onto the Platform API value.
+// onto the Platform API value. Callers must only invoke it for a non-empty
+// setting.
 func toSeaplaneEC2MetadataHTTPTokens(tokens rosacontrolplanev1.Ec2MetadataHTTPTokens) seaplanev1alpha1.EC2InstanceMetadataHttpTokens {
 	if tokens == rosacontrolplanev1.Ec2MetadataHTTPTokensOptional {
 		return seaplanev1alpha1.EC2InstanceMetadataHttpTokensOptional

@@ -215,8 +215,9 @@ func TestReconcileSeaplaneMachinePoolNormal_Create(t *testing.T) {
 	g.Expect(created.Spec.NodePool.ClusterName).To(Equal("test-cluster"))
 	g.Expect(created.Spec.NodePool.Platform.AWS.InstanceProfile).To(Equal("test-cluster-ROSA-Worker-Role"))
 	g.Expect(*created.Spec.NodePool.Platform.AWS.Subnet.ID).To(Equal("subnet-0123456789abcdef0"))
-	g.Expect(created.Spec.NodePool.Release.Image).To(
-		Equal("quay.io/openshift-release-dev/ocp-release:4.19.0-x86_64"))
+	// The release image is only sent when the machine pool requests an
+	// explicit version; otherwise the platform defaults it to the cluster's.
+	g.Expect(created.Spec.NodePool.Release.Image).To(BeEmpty())
 	g.Expect(*created.Spec.NodePool.Replicas).To(Equal(int32(2)))
 
 	g.Expect(machinePoolScope.RosaMachinePool.Status.ID).To(Equal(string(created.UID)))

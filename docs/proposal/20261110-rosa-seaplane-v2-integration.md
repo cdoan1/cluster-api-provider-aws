@@ -137,7 +137,7 @@ seaplane equivalents of `buildOCMClusterSpec` / `nodePoolBuilder`):
 | `nodePoolName` | `metadata.name` = `<cluster-name>.<nodePoolName>` (the `<cluster>.<child>` convention resolves the parent cluster) |
 | `instanceType`, `subnet` | `spec.nodePool.platform.aws.instanceType` / `.subnet.id` |
 | — | `spec.nodePool.platform.aws.instanceProfile` = `<operator-roles-prefix>-ROSA-Worker-Role`, derived from the cluster's RolesRef |
-| `version` | validated against the cluster's running version; the release image is taken from the parent cluster |
+| `version` | validated against the cluster's running version; the release image is **only sent when a version is requested** (rosa CLI pattern — otherwise the platform defaults the pool to the cluster's release) |
 | MachinePool `replicas` / `autoscaling` | `spec.nodePool.replicas` / `.autoScaling` |
 | `labels`, `taints`, `additionalTags`, `tuningConfigs`, `autoRepair`, `nodeDrainGracePeriod`, `volumeSize`, `imageType`, `spotMarketOptions` | corresponding NodePool fields |
 
