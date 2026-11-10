@@ -25,14 +25,19 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoretry "k8s.io/client-go/util/retry"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	infrav1 "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/test/e2e/shared"
 )
 
@@ -49,9 +54,10 @@ var seaplaneManagerEnvVars = []string{
 }
 
 // patchSeaplaneManagerEnv injects the SEAPLANE_* environment variables into
-// the capa controller manager deployment after clusterctl init. All variables
-// are applied in a single update (with conflict retries) so the manager only
-// rolls once, before the first spec reconciles.
+// the capa controller manager deployment after clusterctl init, waits for the
+// resulting rollout, and ensures the default AWSClusterControllerIdentity
+// exists. All variables are applied in a single update (with conflict
+// retries) so the manager only rolls once, before the first spec reconciles.
 func patchSeaplaneManagerEnv(e2eCtx *shared.E2EContext) {
 	values := map[string]string{}
 	for _, name := range seaplaneManagerEnvVars {
@@ -77,6 +83,67 @@ func patchSeaplaneManagerEnv(e2eCtx *shared.E2EContext) {
 	Expect(err).ToNot(HaveOccurred(), "failed to update the capa controller manager deployment")
 
 	ginkgo.By(fmt.Sprintf("Patched %d SEAPLANE_* environment variables into the capa manager deployment", len(values)))
+
+	// Wait for the rollout triggered by the env change so that the new manager
+	// (and its webhooks) are serving before anything else touches the cluster.
+	waitManagerRollout(c, key)
+
+	// The shared suite helper creates the controller identity right after
+	// clusterctl init, but that can race the manager's webhook readiness
+	// (failurePolicy=fail) and its error is swallowed. Ensure the identity
+	// exists now, with the error surfaced.
+	ensureControllerIdentity(c)
+}
+
+// waitManagerRollout waits until the capa manager deployment has rolled out
+// the generation produced by the env patch and reports available replicas.
+func waitManagerRollout(c client.Client, key types.NamespacedName) {
+	ginkgo.By("Waiting for the capa manager rollout")
+	Eventually(func() (bool, error) {
+		deployment := &appsv1.Deployment{}
+		if err := c.Get(context.TODO(), key, deployment); err != nil {
+			return false, err
+		}
+		replicas := int32(1)
+		if deployment.Spec.Replicas != nil {
+			replicas = *deployment.Spec.Replicas
+		}
+		return deployment.Status.ObservedGeneration >= deployment.Generation &&
+			deployment.Status.UpdatedReplicas == replicas &&
+			deployment.Status.AvailableReplicas == replicas, nil
+	}, 5*time.Minute, 5*time.Second).Should(BeTrue(), "capa manager rollout should complete")
+}
+
+// ensureControllerIdentity creates the default AWSClusterControllerIdentity
+// if it does not exist yet. The ROSAControlPlane scope resolves its AWS
+// session through this identity.
+func ensureControllerIdentity(c client.Client) {
+	ginkgo.By("Ensuring the AWSClusterControllerIdentity \"default\" exists")
+	identity := &infrav1.AWSClusterControllerIdentity{}
+	err := c.Get(context.TODO(), types.NamespacedName{Name: infrav1.AWSClusterControllerIdentityName}, identity)
+	if err == nil {
+		return
+	}
+	if !apierrors.IsNotFound(err) {
+		Expect(err).ToNot(HaveOccurred(), "failed to get the AWSClusterControllerIdentity")
+	}
+
+	identity = &infrav1.AWSClusterControllerIdentity{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: infrav1.GroupVersion.String(),
+			Kind:       string(infrav1.ControllerIdentityKind),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: infrav1.AWSClusterControllerIdentityName,
+		},
+		Spec: infrav1.AWSClusterControllerIdentitySpec{
+			AWSClusterIdentitySpec: infrav1.AWSClusterIdentitySpec{
+				AllowedNamespaces: &infrav1.AllowedNamespaces{},
+			},
+		},
+	}
+	Expect(c.Create(context.TODO(), identity)).To(Succeed(),
+		"failed to create the AWSClusterControllerIdentity \"default\"")
 }
 
 // setContainerEnv sets an environment variable on a container, replacing an
