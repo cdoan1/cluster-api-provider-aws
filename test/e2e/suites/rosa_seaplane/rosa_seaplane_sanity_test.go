@@ -47,6 +47,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	rosacontrolplanev1 "sigs.k8s.io/cluster-api-provider-aws/v2/controlplane/rosa/api/v1beta2"
+	expinfrav1 "sigs.k8s.io/cluster-api-provider-aws/v2/exp/api/v1beta2"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/test/e2e/shared"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
@@ -54,6 +55,7 @@ import (
 const (
 	clusterReadyTimeout           = 90 * time.Minute
 	clusterDeletedTimeout         = 60 * time.Minute
+	nodepoolReadyTimeout          = 45 * time.Minute
 	oidcConfigReadyTimeout        = 15 * time.Minute
 	operatorRolesDeletedTimeout   = 10 * time.Minute
 	pollInterval                  = 30 * time.Second
@@ -480,7 +482,105 @@ var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
 		}, cp)).To(Succeed())
 		Expect(cp.Status.ID).To(Equal(string(cluster.UID)))
 
-		// ── Phase 5: delete ─────────────────────────────────────────────
+		// ── Phase 5: node pools ────────────────────────────────────────
+		// np1 and np2 mirror the terraform-provider-rhcs sanity test: two
+		// pools with distinct replica counts, both verified through the
+		// ROSAMachinePool status and cross-checked via the Platform API.
+		np1Name := "np1"
+		np2Name := "np2"
+		instanceType := envOrDefault("SEAPLANE_NODEPOOL_INSTANCE_TYPE", "m5.xlarge")
+		np1Replicas := int32(2)
+		np2Replicas := int32(1)
+
+		createMachinePoolPair := func(mpName string, replicas int32) (*clusterv1.MachinePool, *expinfrav1.ROSAMachinePool) {
+			capiMP := &clusterv1.MachinePool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName + "-" + mpName,
+					Namespace: namespace.Name,
+					Labels: map[string]string{
+						clusterv1.ClusterNameLabel: clusterName,
+					},
+				},
+				Spec: clusterv1.MachinePoolSpec{
+					ClusterName: clusterName,
+					Replicas:    ptr.To(replicas),
+				},
+			}
+			Expect(bootstrapClient.Create(ctx, capiMP)).To(Succeed())
+
+			rosaMP := &expinfrav1.ROSAMachinePool{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      clusterName + "-" + mpName,
+					Namespace: namespace.Name,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: clusterv1.GroupVersion.String(),
+							Kind:       "MachinePool",
+							Name:       capiMP.Name,
+							UID:        capiMP.UID,
+						},
+					},
+				},
+				Spec: expinfrav1.RosaMachinePoolSpec{
+					NodePoolName: mpName,
+					InstanceType: instanceType,
+					Subnet:       subnetID,
+					AutoRepair:   true,
+				},
+			}
+			Expect(bootstrapClient.Create(ctx, rosaMP)).To(Succeed())
+			return capiMP, rosaMP
+		}
+
+		ginkgo.By("Applying MachinePool and ROSAMachinePool np1")
+		np1MP, np1RosaMP := createMachinePoolPair(np1Name, np1Replicas)
+		ginkgo.By("Applying MachinePool and ROSAMachinePool np2")
+		np2MP, np2RosaMP := createMachinePoolPair(np2Name, np2Replicas)
+
+		waitMachinePoolReady := func(mpName string) {
+			ginkgo.By(fmt.Sprintf("Waiting for ROSAMachinePool %s to become ready", mpName))
+			Eventually(func() (bool, error) {
+				mp := &expinfrav1.ROSAMachinePool{}
+				if err := bootstrapClient.Get(ctx, types.NamespacedName{
+					Name: clusterName + "-" + mpName, Namespace: namespace.Name,
+				}, mp); err != nil {
+					return false, err
+				}
+				return mp.Status.Ready, nil
+			}, nodepoolReadyTimeout, pollInterval).Should(BeTrue())
+		}
+		waitMachinePoolReady(np1Name)
+		waitMachinePoolReady(np2Name)
+
+		// Cross-check the node pools via the Platform API.
+		for _, npName := range []string{np1Name, np2Name} {
+			np, err := spCtx.seaplaneClient.SeaplaneV1alpha1().NodePools().Get(
+				ctx, clusterName+"."+npName, spplatform.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(np.Status.Phase).To(Equal(v1alpha1.NodePoolPhaseReady))
+		}
+
+		// ── Phase 6: delete ─────────────────────────────────────────────
+		ginkgo.By("Deleting the ROSAMachinePools")
+		Expect(bootstrapClient.Delete(ctx, np1RosaMP)).To(Succeed())
+		Expect(bootstrapClient.Delete(ctx, np2RosaMP)).To(Succeed())
+
+		for _, mpName := range []string{np1Name, np2Name} {
+			Eventually(func() (bool, error) {
+				err := bootstrapClient.Get(ctx, types.NamespacedName{
+					Name: clusterName + "-" + mpName, Namespace: namespace.Name,
+				}, &expinfrav1.ROSAMachinePool{})
+				if apierrors.IsNotFound(err) {
+					return true, nil
+				}
+				return false, err
+			}, clusterDeletedTimeout, pollInterval).Should(BeTrue())
+		}
+
+		ginkgo.By("Deleting the CAPI MachinePools")
+		Expect(bootstrapClient.Delete(ctx, np1MP)).To(Succeed())
+		Expect(bootstrapClient.Delete(ctx, np2MP)).To(Succeed())
+
 		ginkgo.By("Deleting the ROSAControlPlane")
 		Expect(bootstrapClient.Delete(ctx, cp)).To(Succeed())
 

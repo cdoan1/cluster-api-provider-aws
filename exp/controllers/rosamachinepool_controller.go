@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"time"
 
+	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/blang/semver"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	cmv1 "github.com/openshift-online/ocm-sdk-go/clustersmgmt/v1"
+	seaplaneclientset "github.com/openshift-online/rosa-seaplane-api/clientset"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -44,18 +46,28 @@ import (
 	"sigs.k8s.io/cluster-api/util/predicates"
 )
 
+// Controller names used for scope construction and events.
+const (
+	rosaMachinePoolControllerName       = "rosamachinepool"
+	rosaControlPlaneScopeControllerName = "rosaControlPlane"
+)
+
 // ROSAMachinePoolReconciler reconciles a ROSAMachinePool object.
 type ROSAMachinePoolReconciler struct {
 	client.Client
 	Recorder         record.EventRecorder
 	WatchFilterValue string
 	NewOCMClient     func(ctx context.Context, rosaScope *scope.ROSAControlPlaneScope) (rosa.OCMClient, error)
+	// NewSeaplaneClient overrides the Platform API v2 client creation per
+	// reconciliation. Used in tests to inject a fake clientset.
+	NewSeaplaneClient func(ctx context.Context, awsCfg awsv2.Config, region string) (seaplaneclientset.Interface, error)
 }
 
 // SetupWithManager is used to setup the controller.
 func (r *ROSAMachinePoolReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
 	log := logger.FromContext(ctx)
 	r.NewOCMClient = rosa.NewWrappedOCMClient
+	r.NewSeaplaneClient = rosa.NewSeaplaneClientForSession
 
 	gvk, err := apiutil.GVKForObject(new(expinfrav1.ROSAMachinePool), mgr.GetScheme())
 	if err != nil {
@@ -184,7 +196,7 @@ func (r *ROSAMachinePoolReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	machinePoolScope, err := scope.NewRosaMachinePoolScope(scope.RosaMachinePoolScopeParams{
 		Client:          r.Client,
-		ControllerName:  "rosamachinepool",
+		ControllerName:  rosaMachinePoolControllerName,
 		Cluster:         cluster,
 		ControlPlane:    controlPlane,
 		MachinePool:     machinePool,
@@ -199,7 +211,7 @@ func (r *ROSAMachinePoolReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		Client:         r.Client,
 		Cluster:        cluster,
 		ControlPlane:   controlPlane,
-		ControllerName: "rosaControlPlane",
+		ControllerName: rosaControlPlaneScopeControllerName,
 	})
 	if err != nil {
 		return ctrl.Result{}, errors.Wrap(err, "failed to create rosaControlPlane scope")
@@ -237,6 +249,11 @@ func (r *ROSAMachinePoolReconciler) reconcileNormal(ctx context.Context,
 			return ctrl.Result{}, err
 		}
 	}
+
+	if seaplaneMachinePoolEnabled() {
+		return r.reconcileSeaplaneNormal(ctx, machinePoolScope, rosaControlPlaneScope)
+	}
+
 	if r.NewOCMClient == nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create OCM client: NewOCMClient is nil")
 	}
@@ -358,6 +375,10 @@ func (r *ROSAMachinePoolReconciler) reconcileDelete(
 		machinePoolScope.Info("Delete protection is enabled on ROSAControlPlane, skipping NodePool deletion in OCM")
 		controllerutil.RemoveFinalizer(machinePoolScope.RosaMachinePool, expinfrav1.RosaMachinePoolFinalizer)
 		return nil
+	}
+
+	if seaplaneMachinePoolEnabled() {
+		return r.reconcileSeaplaneDelete(ctx, machinePoolScope, rosaControlPlaneScope)
 	}
 
 	ocmClient, err := r.NewOCMClient(ctx, rosaControlPlaneScope)

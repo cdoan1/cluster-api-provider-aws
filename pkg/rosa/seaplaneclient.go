@@ -17,6 +17,7 @@ limitations under the License.
 package rosa
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -25,6 +26,7 @@ import (
 	"strings"
 
 	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
+	awssts "github.com/aws/aws-sdk-go-v2/service/sts"
 	seaplaneclientset "github.com/openshift-online/rosa-seaplane-api/clientset"
 	seaplanerest "github.com/openshift-online/rosa-seaplane-api/clientset/rest"
 	rosaaws "github.com/openshift/rosa/pkg/aws"
@@ -133,6 +135,29 @@ func NewSeaplaneClient(awsCfg awsv2.Config, creator *rosaaws.Creator, region str
 		CallerARN: creator.ARN,
 		AWSConfig: awsCfg,
 	})
+}
+
+// NewSeaplaneClientForSession builds a Platform API v2 clientset from an
+// AWS session, deriving the caller identity via STS. It is intended for
+// callers that do not already hold a creator, such as the ROSAMachinePool
+// controller, and mirrors the rosa CLI's WithSeaplane identity resolution.
+func NewSeaplaneClientForSession(ctx context.Context, awsCfg awsv2.Config, region string) (seaplaneclientset.Interface, error) {
+	identity, err := awssts.NewFromConfig(awsCfg).GetCallerIdentity(ctx, &awssts.GetCallerIdentityInput{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get AWS caller identity: %w", err)
+	}
+	if identity.Account == nil || identity.Arn == nil {
+		return nil, fmt.Errorf("seaplane: STS caller identity is incomplete")
+	}
+	partition := "aws"
+	if parts := strings.Split(*identity.Arn, ":"); len(parts) > 1 {
+		partition = parts[1]
+	}
+	return NewSeaplaneClient(awsCfg, &rosaaws.Creator{
+		AccountID: *identity.Account,
+		ARN:       *identity.Arn,
+		Partition: partition,
+	}, region)
 }
 
 // WithSeaplaneAPIErrorDetails includes field-level validation causes
