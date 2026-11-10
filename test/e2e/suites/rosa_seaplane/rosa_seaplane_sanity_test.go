@@ -559,6 +559,13 @@ var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
 									Name:     clusterName + "-" + mpName + "-bootstrap",
 								},
 							},
+							// The infrastructureRef is the real wiring: it points at the
+							// ROSAMachinePool that owns the seaplane NodePool reconciliation.
+							InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+								APIGroup: "infrastructure.cluster.x-k8s.io",
+								Kind:     "ROSAMachinePool",
+								Name:     clusterName + "-" + mpName,
+							},
 						},
 					},
 				},
