@@ -187,16 +187,29 @@ func newSeaplaneTestContext(ctx context.Context) *seaplaneTestContext {
 	}
 }
 
-// createSeaplaneOidcConfig creates a managed OIDC config and waits for it to
-// become Ready, returning its UID.
-func (c *seaplaneTestContext) createSeaplaneOidcConfig(ctx context.Context, name string) string {
+// createSeaplaneOidcConfig creates a managed OIDC config and returns its
+// UID and issuer URL. The config's phase stays Pending until a cluster is
+// created and associated with it — mirroring the terraform-provider-rhcs
+// sanity test, do NOT wait for Ready here; wait after the cluster is applied.
+func (c *seaplaneTestContext) createSeaplaneOidcConfig(ctx context.Context, name string) (uid string, issuerURL string) {
 	created, err := c.seaplaneClient.SeaplaneV1alpha1().OidcConfigs().Create(ctx, &v1alpha1.OidcConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec:       v1alpha1.OidcConfigSpec{Type: "managed"},
 	}, spplatform.CreateOptions{})
 	ExpectWithOffset(1, err).ToNot(HaveOccurred())
 	ExpectWithOffset(1, created).ToNot(BeNil())
+	ExpectWithOffset(1, created.Spec.IssuerUrl).ToNot(BeEmpty(),
+		"the OIDC issuer URL must be available immediately after creation")
 
+	ginkgo.By(fmt.Sprintf("OIDC config %s created (phase %s, issuer %s)",
+		name, created.Status.Phase, created.Spec.IssuerUrl))
+	return string(created.UID), created.Spec.IssuerUrl
+}
+
+// waitForSeaplaneOidcConfigReady waits for a managed OIDC config to reach
+// Ready, which only happens once a cluster has been created and associated
+// with it.
+func (c *seaplaneTestContext) waitForSeaplaneOidcConfigReady(ctx context.Context, name string) {
 	ExpectWithOffset(1, c.seaplaneClient.SeaplaneV1alpha1().OidcConfigs().WaitUntil(
 		ctx, name,
 		func(config *v1alpha1.OidcConfig) bool {
@@ -208,10 +221,6 @@ func (c *seaplaneTestContext) createSeaplaneOidcConfig(ctx context.Context, name
 		},
 		pollInterval, oidcConfigReadyTimeout,
 	)).To(Succeed())
-
-	ready, err := c.seaplaneClient.SeaplaneV1alpha1().OidcConfigs().Get(ctx, name, spplatform.GetOptions{})
-	ExpectWithOffset(1, err).ToNot(HaveOccurred())
-	return string(ready.UID)
 }
 
 func (c *seaplaneTestContext) deleteSeaplaneOidcConfig(ctx context.Context, name string) {
@@ -393,19 +402,15 @@ var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
 
 		// ── Phase 1: OIDC config ────────────────────────────────────────
 		ginkgo.By("Creating managed OIDC config via the Platform API")
-		oidcUID := spCtx.createSeaplaneOidcConfig(ctx, oidcConfigName)
+		oidcUID, oidcIssuerURL := spCtx.createSeaplaneOidcConfig(ctx, oidcConfigName)
 		ginkgo.DeferCleanup(func(ctx context.Context) {
 			ginkgo.By("Teardown: delete OIDC config")
 			spCtx.deleteSeaplaneOidcConfig(ctx, oidcConfigName)
 		})
 
-		oidcConfig, err := spCtx.seaplaneClient.SeaplaneV1alpha1().OidcConfigs().Get(ctx, oidcConfigName, spplatform.GetOptions{})
-		Expect(err).ToNot(HaveOccurred())
-		Expect(oidcConfig.Spec.IssuerUrl).ToNot(BeEmpty())
-
 		// ── Phase 2: operator roles ─────────────────────────────────────
 		ginkgo.By("Creating operator roles via AWS IAM")
-		spCtx.createSeaplaneOperatorRoles(ctx, operatorRolesPrefix, oidcConfig.Spec.IssuerUrl)
+		spCtx.createSeaplaneOperatorRoles(ctx, operatorRolesPrefix, oidcIssuerURL)
 		ginkgo.DeferCleanup(func(ctx context.Context) {
 			ginkgo.By("Teardown: delete operator roles")
 			spCtx.deleteSeaplaneOperatorRoles(ctx, operatorRolesPrefix)
@@ -460,6 +465,12 @@ var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
 		Expect(bootstrapClient.Create(ctx, rosaControlPlane)).To(Succeed())
 
 		// ── Phase 4: wait for the cluster to become ready ───────────────
+		// ── Wait for OIDC config Ready (after cluster association) ──────
+		// A managed OIDC config only reaches Ready once the cluster is created
+		// and associated with it, mirroring the TF sanity test's ordering.
+		ginkgo.By("Waiting for the OIDC config to reach Ready after cluster association")
+		spCtx.waitForSeaplaneOidcConfigReady(ctx, oidcConfigName)
+
 		ginkgo.By("Waiting for the ROSAControlPlane to become ready")
 		Eventually(func() (bool, error) {
 			cp := &rosacontrolplanev1.ROSAControlPlane{}
