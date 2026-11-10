@@ -54,16 +54,17 @@ type SeaplaneSubnetInfo struct {
 
 // BuildSeaplaneCluster maps a RosaControlPlane spec onto a Seaplane v2
 // Platform API Cluster create object. It is the seaplane equivalent of
-// buildOCMClusterSpec. releaseImage is the OCP release payload image;
-// subnetInfo describes the first (control plane) subnet; baseDomain is
-// optional and may be empty (the Platform API allocates a DNS reservation).
+// buildOCMClusterSpec. releaseImage is the OCP release payload image and
+// subnetInfo describes the first (control plane) subnet. The DNS base domain
+// is intentionally not set: the Platform API manages DNS allocation and
+// rejects customer-supplied values with
+// "spec.hostedCluster.dns.baseDomain: field is platform-managed".
 func BuildSeaplaneCluster(
 	controlPlaneSpec rosacontrolplanev1.RosaControlPlaneSpec,
 	roleConfig *expinfrav1.ROSARoleConfig,
 	rosaNet *expinfrav1.ROSANetwork,
 	releaseImage string,
 	subnetInfo SeaplaneSubnetInfo,
-	baseDomain string,
 ) (*seaplanev1alpha1.Cluster, error) {
 	if releaseImage == "" {
 		return nil, fmt.Errorf("seaplane: release image is required (set rosaControlPlaneSpec.releaseImage or %s)", SeaplaneReleaseImageEnvVar)
@@ -132,10 +133,6 @@ func BuildSeaplaneCluster(
 				Networking: networking,
 			},
 		},
-	}
-
-	if baseDomain != "" {
-		cluster.Spec.HostedCluster.DNS.BaseDomain = baseDomain
 	}
 
 	if controlPlaneSpec.DeleteProtection == rosacontrolplanev1.DeleteProtectionEnabled {

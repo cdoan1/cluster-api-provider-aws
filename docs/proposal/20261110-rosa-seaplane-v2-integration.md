@@ -124,7 +124,7 @@ seaplane equivalents of `buildOCMClusterSpec` / `nodePoolBuilder`):
 | `oidcID` (or `rosaRoleConfigRef` status) | `spec.oidcConfigId` |
 | `rolesRef` (or role config status) | `spec.hostedCluster.platform.aws.rolesRef` |
 | `releaseImage` (or `SEAPLANE_RELEASE_IMAGE`) | `spec.hostedCluster.release.image` |
-| `baseDomain` (or `SEAPLANE_BASE_DOMAIN`) | `spec.hostedCluster.dns.baseDomain` (empty ⇒ API auto-allocates a DNS reservation) |
+| — | `spec.hostedCluster.dns.baseDomain` is **not set**: the Platform API manages DNS allocation and rejects customer-supplied values (`field is platform-managed and cannot be set by customers`) |
 | `subnets[0]` (or `rosaNetworkRef`) | `spec.hostedCluster.platform.aws.cloudProviderConfig.subnet.id`; VPC and AZ are resolved via EC2 `DescribeSubnets`, like the rosa CLI |
 | `network.machineCIDR/podCIDR/serviceCIDR` | `spec.hostedCluster.networking` (OVNKubernetes, rosa CLI CIDR defaults) |
 | `endpointAccess` | `spec.hostedCluster.platform.aws.endpointAccess` |
@@ -179,8 +179,8 @@ Both controllers expose an injectable `NewSeaplaneClient` factory (mirroring
 - **`releaseImage`** — the OCP release payload image; required on the
   seaplane path (the OCM path ignores it and derives the payload from
   `version`). Falls back to the `SEAPLANE_RELEASE_IMAGE` env var.
-- **`baseDomain`** — DNS base domain; empty means the Platform API
-  allocates a DNS reservation. Falls back to `SEAPLANE_BASE_DOMAIN`.
+- **`baseDomain`** — removed: the Platform API rejects customer-supplied
+  DNS base domains (`field is platform-managed`); DNS is auto-allocated.
 
 ### Dependencies
 

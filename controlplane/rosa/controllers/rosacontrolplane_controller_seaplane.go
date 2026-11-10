@@ -95,16 +95,6 @@ func resolveSeaplaneReleaseImage(rosaScope *scope.ROSAControlPlaneScope) string 
 	return rosa.SeaplaneReleaseImage()
 }
 
-// resolveSeaplaneBaseDomain returns the DNS base domain from the
-// RosaControlPlaneSpec, falling back to the SEAPLANE_BASE_DOMAIN
-// environment variable.
-func resolveSeaplaneBaseDomain(rosaScope *scope.ROSAControlPlaneScope) string {
-	if rosaScope.ControlPlane.Spec.BaseDomain != "" {
-		return rosaScope.ControlPlane.Spec.BaseDomain
-	}
-	return rosa.SeaplaneBaseDomain()
-}
-
 // newSeaplaneClient builds the Platform API v2 client, honouring the
 // injectable NewSeaplaneClient factory.
 func (r *ROSAControlPlaneReconciler) newSeaplaneClient(
@@ -153,7 +143,6 @@ func (r *ROSAControlPlaneReconciler) createSeaplaneCluster(
 		rosaNet,
 		resolveSeaplaneReleaseImage(rosaScope),
 		subnetInfo,
-		resolveSeaplaneBaseDomain(rosaScope),
 	)
 	if err != nil {
 		return err

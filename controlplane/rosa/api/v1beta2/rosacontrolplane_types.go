@@ -181,18 +181,6 @@ type RosaControlPlaneSpec struct { //nolint: maligned
 	// +optional
 	ReleaseImage string `json:"releaseImage,omitempty"`
 
-	// BaseDomain is the DNS base domain used when creating the cluster via the
-	// Seaplane Platform API v2, for example "f7a3.0.openshiftapps.com".
-	// When empty, the Platform API allocates a DNS reservation automatically.
-	// When the ROSASeaplaneV2 feature gate is disabled this field is ignored.
-	// When empty and the gate is enabled, the controller falls back to the
-	// SEAPLANE_BASE_DOMAIN environment variable.
-	//
-	// +immutable
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="baseDomain is immutable"
-	// +optional
-	BaseDomain string `json:"baseDomain,omitempty"`
-
 	// OpenShift version channel group.
 	// When not specified, OCM will determine the appropriate channel group based on the cluster version.
 	// This field will be deprecated in a future release in favor of the Channel field.

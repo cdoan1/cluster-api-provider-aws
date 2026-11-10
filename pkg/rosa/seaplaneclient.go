@@ -43,11 +43,6 @@ const (
 	// The RosaControlPlane API has no release-image field yet; until one is
 	// added, the release image is taken from the environment.
 	SeaplaneReleaseImageEnvVar = "SEAPLANE_RELEASE_IMAGE"
-
-	// SeaplaneBaseDomainEnvVar optionally holds the DNS base domain to use
-	// when creating a Seaplane v2 cluster. When empty, the Platform API
-	// operator allocates a DNS reservation automatically.
-	SeaplaneBaseDomainEnvVar = "SEAPLANE_BASE_DOMAIN"
 )
 
 // awsRegionRE matches standard and GovCloud AWS region names within a URL
@@ -62,11 +57,6 @@ func SeaplaneURL() string {
 // SeaplaneReleaseImage returns the OCP release payload image from the environment.
 func SeaplaneReleaseImage() string {
 	return os.Getenv(SeaplaneReleaseImageEnvVar)
-}
-
-// SeaplaneBaseDomain returns the DNS base domain from the environment.
-func SeaplaneBaseDomain() string {
-	return os.Getenv(SeaplaneBaseDomainEnvVar)
 }
 
 // ValidateSeaplaneURL returns an error if rawURL is empty, cannot be parsed,

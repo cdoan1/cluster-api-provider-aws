@@ -90,18 +90,6 @@ spec:
                 items:
                   type: string
                 type: array
-              baseDomain:
-                description: |-
-                  BaseDomain is the DNS base domain used when creating the cluster via the
-                  Seaplane Platform API v2, for example "f7a3.0.openshiftapps.com".
-                  When empty, the Platform API allocates a DNS reservation automatically.
-                  When the ROSASeaplaneV2 feature gate is disabled this field is ignored.
-                  When empty and the gate is enabled, the controller falls back to the
-                  SEAPLANE_BASE_DOMAIN environment variable.
-                type: string
-                x-kubernetes-validations:
-                - message: baseDomain is immutable
-                  rule: self == oldSelf
               billingAccount:
                 description: |-
                   BillingAccount is an optional AWS account to use for billing the subscription fees for ROSA HCP clusters.

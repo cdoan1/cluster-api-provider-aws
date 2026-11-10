@@ -192,12 +192,10 @@ func TestReconcileSeaplaneNormal_CreateWithSpecReleaseImage(t *testing.T) {
 	g := NewWithT(t)
 	// Ensure the env fallback is not what satisfies the create.
 	t.Setenv(rosa.SeaplaneReleaseImageEnvVar, "")
-	t.Setenv(rosa.SeaplaneBaseDomainEnvVar, "")
 	stubDescribeSeaplaneSubnet(t)
 
 	controlPlane := newSeaplaneTestControlPlane()
 	controlPlane.Spec.ReleaseImage = "quay.io/openshift-release-dev/ocp-release:4.19.0-x86_64"
-	controlPlane.Spec.BaseDomain = "spec.example.com"
 	rosaScope, closeScope := newSeaplaneTestScope(t, controlPlane)
 	defer closeScope()
 
@@ -217,7 +215,8 @@ func TestReconcileSeaplaneNormal_CreateWithSpecReleaseImage(t *testing.T) {
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(created.Spec.HostedCluster.Release.Image).To(
 		Equal("quay.io/openshift-release-dev/ocp-release:4.19.0-x86_64"))
-	g.Expect(created.Spec.HostedCluster.DNS.BaseDomain).To(Equal("spec.example.com"))
+	g.Expect(created.Spec.HostedCluster.DNS.BaseDomain).To(BeEmpty(),
+		"the DNS base domain is platform-managed and must not be set")
 }
 
 func TestReconcileSeaplaneNormal_Ready(t *testing.T) {

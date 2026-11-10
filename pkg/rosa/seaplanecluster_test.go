@@ -65,7 +65,6 @@ func TestBuildSeaplaneCluster(t *testing.T) {
 		nil,
 		testReleaseImage,
 		SeaplaneSubnetInfo{SubnetID: testSubnetID, VPCID: testVPCID, Zone: testZone},
-		"example.com",
 	)
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(cluster.Name).To(Equal("test-cluster"))
@@ -80,7 +79,6 @@ func TestBuildSeaplaneCluster(t *testing.T) {
 	g.Expect(cluster.Spec.HostedCluster.Platform.AWS.CloudProviderConfig.Zone).To(Equal(testZone))
 	g.Expect(*cluster.Spec.HostedCluster.Platform.AWS.CloudProviderConfig.Subnet.ID).To(Equal(testSubnetID))
 	g.Expect(string(cluster.Spec.HostedCluster.Platform.AWS.EndpointAccess)).To(Equal("Public"))
-	g.Expect(cluster.Spec.HostedCluster.DNS.BaseDomain).To(Equal("example.com"))
 	g.Expect(string(cluster.Spec.HostedCluster.Networking.NetworkType)).To(Equal("OVNKubernetes"))
 	g.Expect(cluster.Spec.HostedCluster.Networking.MachineNetwork).To(HaveLen(1))
 	g.Expect(cluster.Spec.HostedCluster.Networking.MachineNetwork[0].CIDR.String()).To(Equal("10.0.0.0/16"))
@@ -97,7 +95,7 @@ func TestBuildSeaplaneCluster_PrivateEndpoint(t *testing.T) {
 	spec := seaplaneTestControlPlaneSpec()
 	spec.EndpointAccess = rosacontrolplanev1.Private
 	cluster, err := BuildSeaplaneCluster(spec, nil, nil, testReleaseImage,
-		SeaplaneSubnetInfo{SubnetID: testSubnetID, VPCID: testVPCID}, "")
+		SeaplaneSubnetInfo{SubnetID: testSubnetID, VPCID: testVPCID})
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(string(cluster.Spec.HostedCluster.Platform.AWS.EndpointAccess)).To(Equal("Private"))
 	g.Expect(cluster.Spec.HostedCluster.DNS.BaseDomain).To(BeEmpty())
@@ -113,7 +111,7 @@ func TestBuildSeaplaneCluster_NetworkOverrides(t *testing.T) {
 		ServiceCIDR: "172.31.0.0/16",
 	}
 	cluster, err := BuildSeaplaneCluster(spec, nil, nil, testReleaseImage,
-		SeaplaneSubnetInfo{SubnetID: testSubnetID, VPCID: testVPCID}, "")
+		SeaplaneSubnetInfo{SubnetID: testSubnetID, VPCID: testVPCID})
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(cluster.Spec.HostedCluster.Networking.MachineNetwork[0].CIDR.String()).To(Equal("192.168.0.0/16"))
 	g.Expect(cluster.Spec.HostedCluster.Networking.ClusterNetwork[0].CIDR.String()).To(Equal("10.10.0.0/16"))
@@ -127,7 +125,7 @@ func TestBuildSeaplaneCluster_DeleteProtectionAndTags(t *testing.T) {
 	spec.DeleteProtection = rosacontrolplanev1.DeleteProtectionEnabled
 	spec.AdditionalTags = map[string]string{"owner": "capa"}
 	cluster, err := BuildSeaplaneCluster(spec, nil, nil, testReleaseImage,
-		SeaplaneSubnetInfo{SubnetID: testSubnetID, VPCID: testVPCID}, "")
+		SeaplaneSubnetInfo{SubnetID: testSubnetID, VPCID: testVPCID})
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(*cluster.Spec.DeleteProtection).To(BeTrue())
 	g.Expect(cluster.Spec.Tags).To(Equal(map[string]string{"owner": "capa"}))
@@ -147,7 +145,7 @@ func TestBuildSeaplaneCluster_RoleConfigPrecedence(t *testing.T) {
 		},
 	}
 	cluster, err := BuildSeaplaneCluster(seaplaneTestControlPlaneSpec(), roleConfig, nil, testReleaseImage,
-		SeaplaneSubnetInfo{SubnetID: testSubnetID, VPCID: testVPCID}, "")
+		SeaplaneSubnetInfo{SubnetID: testSubnetID, VPCID: testVPCID})
 	g.Expect(err).ToNot(HaveOccurred())
 	g.Expect(cluster.Spec.OidcConfigID).To(Equal("role-config-oidc-id"))
 	g.Expect(cluster.Spec.HostedCluster.Platform.AWS.RolesRef.IngressARN).To(
@@ -205,7 +203,7 @@ func TestBuildSeaplaneCluster_Errors(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(&spec)
 			}
-			_, err := BuildSeaplaneCluster(spec, nil, nil, tt.release, tt.subnetInfo, "")
+			_, err := BuildSeaplaneCluster(spec, nil, nil, tt.release, tt.subnetInfo)
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(err.Error()).To(ContainSubstring(tt.wantErr))
 		})

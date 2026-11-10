@@ -62,7 +62,6 @@ var userAWSCredentials = os.Getenv("AWS_B64ENCODED_CREDENTIALS")
 var seaplaneManagerEnvVars = []string{
 	"SEAPLANE_URL",
 	"SEAPLANE_RELEASE_IMAGE",
-	"SEAPLANE_BASE_DOMAIN",
 }
 
 // patchSeaplaneManagerEnv injects the SEAPLANE_* environment variables into

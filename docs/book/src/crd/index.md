@@ -11651,23 +11651,6 @@ environment variable.</p>
 </tr>
 <tr>
 <td>
-<code>baseDomain</code><br/>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>BaseDomain is the DNS base domain used when creating the cluster via the
-Seaplane Platform API v2, for example &ldquo;f7a3.0.openshiftapps.com&rdquo;.
-When empty, the Platform API allocates a DNS reservation automatically.
-When the ROSASeaplaneV2 feature gate is disabled this field is ignored.
-When empty and the gate is enabled, the controller falls back to the
-SEAPLANE_BASE_DOMAIN environment variable.</p>
-</td>
-</tr>
-<tr>
-<td>
 <code>channelGroup</code><br/>
 <em>
 <a href="#controlplane.cluster.x-k8s.io/v1beta2.ChannelGroupType">
@@ -12437,23 +12420,6 @@ Required when the ROSASeaplaneV2 feature gate is enabled; the OCM
 reconciliation path derives the payload from Version instead.
 When empty, the controller falls back to the SEAPLANE_RELEASE_IMAGE
 environment variable.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>baseDomain</code><br/>
-<em>
-string
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>BaseDomain is the DNS base domain used when creating the cluster via the
-Seaplane Platform API v2, for example &ldquo;f7a3.0.openshiftapps.com&rdquo;.
-When empty, the Platform API allocates a DNS reservation automatically.
-When the ROSASeaplaneV2 feature gate is disabled this field is ignored.
-When empty and the gate is enabled, the controller falls back to the
-SEAPLANE_BASE_DOMAIN environment variable.</p>
 </td>
 </tr>
 <tr>
