@@ -93,23 +93,46 @@ func patchSeaplaneManagerEnv(e2eCtx *shared.E2EContext) {
 
 	ginkgo.By(fmt.Sprintf("Patched %d SEAPLANE_* environment variables into the capa manager deployment", len(values)))
 
-	// Wait for the rollout triggered by the env change so that the new manager
-	// (and its webhooks) are serving before anything else touches the cluster.
-	waitManagerRollout(c, key)
-
 	// The shared suite setup overwrites AWS_B64ENCODED_CREDENTIALS with the
-	// bootstrapper user's keys, which the Platform API rejects. Restore the
-	// user's credentials in the manager's credentials secret; the credential
-	// chain re-reads the secret on every reconcile.
+	// bootstrapper user's keys, which the Platform API rejects with a 403.
+	// Restore the user's credentials in the manager's credentials secret.
+	// The manager mounts that secret as the SDK shared credentials file and
+	// the SDK caches credentials after the first retrieval, so the pod must
+	// be restarted to pick the new value up.
 	if userAWSCredentials != "" {
 		patchManagerCredentials(c, userAWSCredentials)
+		restartManagerDeployment(c, key)
 	}
+
+	// Wait for the rollout (env change and/or restart) so that the new
+	// manager and its webhooks are serving before anything else touches the
+	// cluster.
+	waitManagerRollout(c, key)
 
 	// The shared suite helper creates the controller identity right after
 	// clusterctl init, but that can race the manager's webhook readiness
 	// (failurePolicy=fail) and its error is swallowed. Ensure the identity
 	// exists now, with the error surfaced.
 	ensureControllerIdentity(c)
+}
+
+// restartManagerDeployment triggers a manager rollout restart so pods pick
+// up the updated credentials secret (the SDK caches credentials from the
+// mounted shared credentials file after first retrieval).
+func restartManagerDeployment(c client.Client, key types.NamespacedName) {
+	ginkgo.By("Restarting the capa manager to pick up the restored credentials")
+	err := clientgoretry.RetryOnConflict(clientgoretry.DefaultRetry, func() error {
+		deployment := &appsv1.Deployment{}
+		if err := c.Get(context.TODO(), key, deployment); err != nil {
+			return err
+		}
+		if deployment.Spec.Template.Annotations == nil {
+			deployment.Spec.Template.Annotations = map[string]string{}
+		}
+		deployment.Spec.Template.Annotations["kubernetes.io/restartedAt"] = time.Now().Format(time.RFC3339)
+		return c.Update(context.TODO(), deployment)
+	})
+	Expect(err).ToNot(HaveOccurred(), "failed to restart the capa controller manager deployment")
 }
 
 // waitManagerRollout waits until the capa manager deployment has rolled out
