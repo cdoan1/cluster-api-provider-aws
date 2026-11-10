@@ -484,6 +484,7 @@ var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
 				RosaClusterName: clusterName,
 				Region:          spCtx.region,
 				Version:         "4.19.0",
+				VersionGate:     rosacontrolplanev1.WaitForAcknowledge,
 				Subnets:         []string{subnetID},
 				OIDCID:          oidcUID,
 				RolesRef:        rolesRef,
