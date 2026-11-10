@@ -30,6 +30,8 @@ import (
 	cgscheme "k8s.io/client-go/kubernetes/scheme"
 
 	infrav1 "sigs.k8s.io/cluster-api-provider-aws/v2/api/v1beta2"
+	rosacontrolplanev1 "sigs.k8s.io/cluster-api-provider-aws/v2/controlplane/rosa/api/v1beta2"
+	expinfrav1 "sigs.k8s.io/cluster-api-provider-aws/v2/exp/api/v1beta2"
 	bootstrapv1beta1 "sigs.k8s.io/cluster-api/api/bootstrap/kubeadm/v1beta1"
 	controlplanev1beta1 "sigs.k8s.io/cluster-api/api/controlplane/kubeadm/v1beta1"
 	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
@@ -236,6 +238,8 @@ func DefaultScheme() *runtime.Scheme {
 	_ = controlplanev1beta1.AddToScheme(sc)
 
 	_ = infrav1.AddToScheme(sc)
+	_ = rosacontrolplanev1.AddToScheme(sc)
+	_ = expinfrav1.AddToScheme(sc)
 	_ = cgscheme.AddToScheme(sc)
 	return sc
 }
