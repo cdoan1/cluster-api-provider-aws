@@ -26,17 +26,6 @@ spec:
           image: controller:latest
           imagePullPolicy: Always
           name: manager
-          env:
-            # Seaplane Platform API v2 endpoint used when the ROSASeaplaneV2
-            # feature gate is enabled.
-            - name: SEAPLANE_URL
-              value: "${SEAPLANE_URL:=}"
-            # OCP release payload image for seaplane v2 cluster creation.
-            - name: SEAPLANE_RELEASE_IMAGE
-              value: "${SEAPLANE_RELEASE_IMAGE:=}"
-            # Optional DNS base domain for seaplane v2 cluster creation.
-            - name: SEAPLANE_BASE_DOMAIN
-              value: "${SEAPLANE_BASE_DOMAIN:=}"
           ports:
             - containerPort: 9440
               name: healthz

@@ -52,6 +52,7 @@ var _ = ginkgo.SynchronizedBeforeSuite(func() []byte {
 	return shared.Node1BeforeSuite(e2eCtx)
 }, func(data []byte) {
 	shared.AllNodesBeforeSuite(e2eCtx, data)
+	patchSeaplaneManagerEnv(e2eCtx)
 })
 
 var _ = ginkgo.SynchronizedAfterSuite(

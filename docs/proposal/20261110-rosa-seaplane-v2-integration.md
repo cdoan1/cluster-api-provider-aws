@@ -194,17 +194,25 @@ module versions.
 
 ### Manager configuration
 
-`config/manager/manager.yaml` passes the gates and env vars into the
-controller deployment; all are overridable at deploy time via clusterctl
-variables:
+`config/manager/manager.yaml` passes the feature gates into the controller
+deployment; both are overridable at deploy time via clusterctl variables
+(sourced from OS environment variables):
 
 | Variable | Purpose |
 |---|---|
 | `EXP_ROSA` | enable the ROSA controllers |
 | `EXP_ROSA_SEAPLANE_V2` | switch reconciliation to the Platform API |
-| `SEAPLANE_URL` | Platform API base URL, e.g. `https://<id>.execute-api.us-east-1.amazonaws.com` |
-| `SEAPLANE_RELEASE_IMAGE` | fallback release payload image |
-| `SEAPLANE_BASE_DOMAIN` | fallback DNS base domain |
+
+The `SEAPLANE_*` runtime variables (`SEAPLANE_URL`,
+`SEAPLANE_RELEASE_IMAGE`, `SEAPLANE_BASE_DOMAIN`) are **not** declared in
+the provider components: clusterctl treats a variable with an empty default
+— like the optional `SEAPLANE_BASE_DOMAIN` — as missing and fails variable
+substitution for every user of the components. Instead, the seaplane e2e
+suite patches them into the `capa-controller-manager` deployment after
+`clusterctl init` (see `rosa_seaplane_manager_env.go`); the env change
+triggers a rollout before the first spec runs. The controller reads them
+the same way in any other deployment — set them as pod environment
+variables however your platform allows.
 
 ## Testing
 
