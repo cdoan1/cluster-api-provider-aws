@@ -545,6 +545,22 @@ var _ = ginkgo.Describe("[rosa-seaplane] Seaplane sanity", func() {
 				Spec: clusterv1.MachinePoolSpec{
 					ClusterName: clusterName,
 					Replicas:    ptr.To(replicas),
+					// The CAPI MachinePool webhook requires a bootstrap configRef to be
+					// defined. The seaplane flow does not use a bootstrap provider (the
+					// ROSAMachinePool controller only needs the ownerRef and replicas),
+					// so reference a placeholder KubeadmConfig that is never created.
+					Template: clusterv1.MachineTemplateSpec{
+						Spec: clusterv1.MachineSpec{
+							ClusterName: clusterName,
+							Bootstrap: clusterv1.Bootstrap{
+								ConfigRef: clusterv1.ContractVersionedObjectReference{
+									APIGroup: "bootstrap.cluster.x-k8s.io",
+									Kind:     "KubeadmConfig",
+									Name:     clusterName + "-" + mpName + "-bootstrap",
+								},
+							},
+						},
+					},
 				},
 			}
 			Expect(bootstrapClient.Create(ctx, capiMP)).To(Succeed())
