@@ -136,7 +136,7 @@ func waitManagerRollout(c client.Client, key types.NamespacedName) {
 // bootstrapper user's keys that clusterctl installed.
 func patchManagerCredentials(c client.Client, encoded string) {
 	ginkgo.By("Restoring the user's AWS credentials in the capa manager credentials secret")
-	key := types.NamespacedName{Namespace: "capa-system", Name: "manager-bootstrap-credentials"}
+	key := types.NamespacedName{Namespace: "capa-system", Name: "capa-manager-bootstrap-credentials"}
 
 	err := clientgoretry.RetryOnConflict(clientgoretry.DefaultRetry, func() error {
 		secret := &corev1.Secret{}
